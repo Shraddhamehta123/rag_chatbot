@@ -13,7 +13,7 @@ import pytest
 from chunking.chunker import Chunk
 from embeddings.embedding_service import generate_embeddings
 from rag_pipeline.prompt_templates import NOT_FOUND_MESSAGE
-from rag_pipeline.rag_pipeline import RAGPipeline
+from rag_pipeline.rag_pipeline import SERVICE_UNAVAILABLE_MESSAGE, RAGPipeline
 from rag_pipeline.retrieval_service import RetrievedChunk
 from vector_store import chroma_manager
 
@@ -99,6 +99,26 @@ def test_answer_question_returns_citations_with_mocked_llm(pipeline, monkeypatch
     assert 0.0 <= result["confidence"] <= 1.0
     # Two turns (user + assistant) should now be recorded in memory.
     assert len(pipeline.memory.get_history()) == 2
+
+
+def test_generate_answer_degrades_gracefully_when_llm_keeps_failing(pipeline, monkeypatch):
+    import time
+
+    # Simulate a sustained outage/rate-limit: every call to the chat model
+    # raises. generate_answer should retry a bounded number of times, then
+    # return the user-facing fallback message instead of letting the
+    # exception crash the chat turn. We stub out time.sleep so the test
+    # doesn't actually wait through the retry's real backoff delays.
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+
+    def always_fails(self, messages, **kwargs):
+        raise RuntimeError("simulated 429 rate limit")
+
+    monkeypatch.setattr(type(pipeline._llm), "invoke", always_fails)
+
+    answer = pipeline.generate_answer("some context", "What is my deductible?")
+
+    assert answer == SERVICE_UNAVAILABLE_MESSAGE
 
 
 def test_answer_question_blocks_prompt_injection(pipeline):

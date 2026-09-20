@@ -41,6 +41,8 @@
 
 from typing import Any, Dict, List
 
+from tenacity import retry, stop_after_attempt, wait_exponential
+
 from config.settings import settings
 from rag_pipeline import guardrails, retrieval_service
 from rag_pipeline.llm_service import get_chat_model
@@ -53,6 +55,11 @@ from utils.logging_utils import get_logger
 from utils.mlflow_tracking import trace_query
 
 logger = get_logger(__name__)
+
+SERVICE_UNAVAILABLE_MESSAGE = (
+    "I'm having trouble reaching the AI service right now (it may be rate-limited "
+    "or temporarily unavailable). Please try asking again in a moment."
+)
 
 
 class RAGPipeline:
@@ -133,14 +140,37 @@ class RAGPipeline:
             )
         return "\n\n---\n\n".join(blocks)
 
-    def generate_answer(self, context: str, question: str) -> str:
-        """
-        Call the Gemini chat model with the grounded prompt and return its
-        raw text answer.
-        """
-        messages = build_prompt(context, question, self.memory.get_history())
+    @retry(
+        # Chat APIs (Gemini's free tier especially -- 5 requests/minute) can
+        # return transient 429/503 errors under normal interactive use, not
+        # just under load. A short, bounded retry smooths over a single
+        # rate-limit blip without making the user wait too long if the
+        # service is genuinely down.
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=3, max=20),
+        reraise=True,
+    )
+    def _invoke_llm(self, messages: List) -> str:
         response = self._llm.invoke(messages)
         return response.content.strip()
+
+    def generate_answer(self, context: str, question: str) -> str:
+        """
+        Call the chat model with the grounded prompt and return its raw text
+        answer.
+
+        If the LLM call still fails after retries (e.g. a sustained rate
+        limit or outage), this returns a clear, user-facing "service
+        unavailable" message instead of letting an unhandled exception reach
+        the Streamlit UI as a raw traceback -- a degraded but honest
+        response beats a crashed chat turn.
+        """
+        messages = build_prompt(context, question, self.memory.get_history())
+        try:
+            return self._invoke_llm(messages)
+        except Exception:
+            logger.exception("Chat model call failed after retries")
+            return SERVICE_UNAVAILABLE_MESSAGE
 
     def answer_question(self, question: str) -> Dict[str, Any]:
         """
