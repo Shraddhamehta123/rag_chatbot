@@ -1,0 +1,61 @@
+# ==============================================================================
+# requirements.txt
+# ------------------------------------------------------------------------------
+# Install with: pip install -r requirements.txt
+#
+# Why pinned versions? RAG apps chain together many fast-moving libraries.
+# Pinning means the app you build today still works the same way next month.
+# ==============================================================================
+
+# --- Frontend ----------------------------------------------------------------
+streamlit==1.38.0
+
+# --- LLM + Embeddings (Gemini) -------------------------------------------------
+google-generativeai==0.8.3        # Gemini chat + embeddings SDK
+langchain-google-genai==2.0.4     # LangChain <-> Gemini integration
+
+# --- LLM + Embeddings (Databricks -- fully keyless when run inside Databricks) ---
+# Pinned deliberately: the newer "databricks-langchain" package pulls in
+# langchain-core 1.x transitively, which conflicts with langchain-google-genai
+# (pinned to langchain-core<0.4 below) and with mlflow's file-store tracking
+# backend used by utils/mlflow_tracking.py. If you drop Gemini entirely
+# (LLM_PROVIDER=databricks AND EMBEDDING_PROVIDER=databricks, no Gemini
+# packages needed), you can upgrade to "databricks-langchain" instead and
+# drop the langchain-google-genai / langchain-core pins above.
+databricks-sdk>=0.30.0            # Databricks auth + Model Serving client
+langchain-databricks==0.1.2       # LangChain <-> Databricks Foundation Model APIs
+
+# --- Orchestration framework ---------------------------------------------------
+langchain==0.3.7
+langchain-core==0.3.15
+langchain-text-splitters==0.3.2   # RecursiveCharacterTextSplitter
+
+# --- Vector database ------------------------------------------------------------
+chromadb==0.5.15
+
+# --- PDF parsing -------------------------------------------------------------------
+PyMuPDF==1.24.10                  # imported as "fitz"
+
+# --- Local embeddings (free, no API key; needs huggingface.co reachable) ----------
+sentence-transformers>=2.2.0
+
+# --- Hybrid search + reranking -----------------------------------------------------
+rank-bm25==0.2.2                  # keyword (BM25) search, combined with vector search
+
+# --- Optional graph-based orchestration -----------------------------------------------
+# Not required by rag_pipeline/rag_pipeline.py (a plain sequential class is
+# enough for this pipeline's 4 steps), but installed and available if you
+# want to re-express retrieve->rerank->generate as a LangGraph StateGraph
+# (e.g. to add branching/looping steps later, like a self-correction retry).
+langgraph==0.2.45
+
+# --- Observability -----------------------------------------------------------------
+mlflow==2.17.2
+
+# --- Utilities -----------------------------------------------------------------------
+python-dotenv==1.0.1
+pydantic==2.9.2
+tenacity==8.5.0
+
+# --- Testing ---------------------------------------------------------------------------
+pytest==8.3.3

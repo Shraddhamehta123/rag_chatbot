@@ -1,0 +1,21 @@
+# Secrets -- NEVER commit these
+.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info/
+
+# Local data stores generated at runtime (rebuildable from data/pdfs/ via scripts/ingest.py)
+vectorstore_db/
+mlruns/
+
+# OS / editor cruft
+.DS_Store
+.vscode/
+.idea/
+
+# pytest
+.pytest_cache/
