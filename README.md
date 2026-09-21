@@ -1,4 +1,4 @@
-# Aetna Insurance Assistant — Local RAG Chatbot
+# Healthcare Insurance Assistant — Local RAG Chatbot
 
 A Retrieval-Augmented Generation (RAG) chatbot that answers member, provider,
 and policy questions using your official insurance plan documents (Evidence

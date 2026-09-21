@@ -13,7 +13,7 @@
 #   (a scanned page is just an image). PyMuPDF is a fast, well-maintained C
 #   library with Python bindings that:
 #     - extracts text in a sensible reading order for the vast majority of
-#       real-world PDFs (like these Aetna Evidence of Coverage / Summary of
+#       real-world PDFs (like these Evidence of Coverage / Summary of
 #       Benefits documents, which are text-based, not scanned images)
 #     - is much faster than pure-Python alternatives (pdfminer, PyPDF2) on
 #       large multi-hundred-page documents
@@ -61,7 +61,7 @@ class PageContent:
 _DOCUMENT_TYPE_KEYWORDS = {
     "evidence_of_coverage": "Evidence of Coverage",
     "summary_of_benefits": "Summary of Benefits",
-    "managed_care_manual": "Medicare Managed Care Manual",
+    "policy_manual": "Policy Manual",
 }
 
 
