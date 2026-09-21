@@ -66,6 +66,11 @@ def isolated_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "feedback_log_path", str(tmp_path / "feedback.jsonl"))
     monkeypatch.setattr(settings, "enable_reranking", False)  # avoid HF model download in tests
     monkeypatch.setattr(settings, "gemini_api_key", "test-key-not-real")
+    # Gemini's real chat quota is only 5/minute; without this, a handful of
+    # tests calling the (mocked) chat model in the same process would
+    # actually sleep for real, since the rate limiter runs regardless of
+    # whether the underlying LLM call itself is mocked.
+    monkeypatch.setattr(settings, "gemini_chat_requests_per_minute", 100_000)
 
     import vector_store.chroma_manager as chroma_manager
 
@@ -79,6 +84,7 @@ def isolated_settings(tmp_path, monkeypatch):
     import rag_pipeline.llm_service as llm_service
 
     monkeypatch.setattr(llm_service, "_llm_instance", None)
+    monkeypatch.setattr(llm_service, "_chat_rate_limiter", None)
 
     yield
 

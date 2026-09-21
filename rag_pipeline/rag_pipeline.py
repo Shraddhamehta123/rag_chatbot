@@ -45,7 +45,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config.settings import settings
 from rag_pipeline import guardrails, retrieval_service
-from rag_pipeline.llm_service import get_chat_model
+from rag_pipeline.llm_service import acquire_chat_slot, get_chat_model
 from rag_pipeline.memory import ConversationMemory
 from rag_pipeline.prompt_templates import NOT_FOUND_MESSAGE, build_prompt
 from rag_pipeline.query_rewriter import rewrite_query
@@ -60,6 +60,31 @@ SERVICE_UNAVAILABLE_MESSAGE = (
     "I'm having trouble reaching the AI service right now (it may be rate-limited "
     "or temporarily unavailable). Please try asking again in a moment."
 )
+AUTH_ERROR_MESSAGE = (
+    "I can't reach the AI service because its API key appears to be invalid, "
+    "expired, or revoked. Please check GEMINI_API_KEY (or the active provider's "
+    "credentials) in your .env file, then restart the app."
+)
+
+# Markers seen in real Gemini/Databricks auth failures (401 Unauthenticated,
+# "invalid authentication credentials", a revoked/expired key). These are
+# PERMANENT failures: retrying with backoff just wastes 10-20 seconds before
+# failing again with the exact same error, and the generic "rate-limited or
+# temporarily unavailable" message actively misleads the user into thinking
+# the problem will resolve itself if they just wait -- it won't, until the
+# key is fixed.
+_PERMANENT_AUTH_ERROR_MARKERS = (
+    "unauthenticated",
+    "invalid authentication credentials",
+    "permission_denied",
+    "api key not valid",
+    "api_key_invalid",
+)
+
+
+def _is_permanent_auth_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in _PERMANENT_AUTH_ERROR_MARKERS)
 
 
 class RAGPipeline:
@@ -146,11 +171,21 @@ class RAGPipeline:
         # just under load. A short, bounded retry smooths over a single
         # rate-limit blip without making the user wait too long if the
         # service is genuinely down.
+        #
+        # retry_error_callback below re-raises immediately (no backoff at
+        # all) when the underlying error is a permanent auth failure (a
+        # dead/invalid API key): retrying that with backoff just delays the
+        # same guaranteed failure by 10-20 seconds for nothing.
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=3, max=20),
+        retry=lambda retry_state: (
+            retry_state.outcome.failed
+            and not _is_permanent_auth_error(retry_state.outcome.exception())
+        ),
         reraise=True,
     )
     def _invoke_llm(self, messages: List) -> str:
+        acquire_chat_slot()
         response = self._llm.invoke(messages)
         return response.content.strip()
 
@@ -159,17 +194,21 @@ class RAGPipeline:
         Call the chat model with the grounded prompt and return its raw text
         answer.
 
-        If the LLM call still fails after retries (e.g. a sustained rate
-        limit or outage), this returns a clear, user-facing "service
-        unavailable" message instead of letting an unhandled exception reach
-        the Streamlit UI as a raw traceback -- a degraded but honest
-        response beats a crashed chat turn.
+        If the LLM call still fails (e.g. a sustained rate limit, an outage,
+        or an invalid/revoked API key), this returns a clear, user-facing
+        message instead of letting an unhandled exception reach the
+        Streamlit UI as a raw traceback -- a degraded but honest response
+        beats a crashed chat turn. A permanent auth failure gets its own
+        distinct message rather than the generic "try again in a moment"
+        one, since waiting will never fix a dead key.
         """
         messages = build_prompt(context, question, self.memory.get_history())
         try:
             return self._invoke_llm(messages)
-        except Exception:
-            logger.exception("Chat model call failed after retries")
+        except Exception as exc:
+            logger.exception("Chat model call failed")
+            if _is_permanent_auth_error(exc):
+                return AUTH_ERROR_MESSAGE
             return SERVICE_UNAVAILABLE_MESSAGE
 
     def answer_question(self, question: str) -> Dict[str, Any]:
@@ -198,7 +237,20 @@ class RAGPipeline:
         with trace_query(question, top_k=settings.top_k, chat_model=active_chat_model) as run_data:
             standalone_question = rewrite_query(question, self.memory.get_history(), self._llm)
 
-            chunks = self.retrieve(standalone_question)
+            try:
+                chunks = self.retrieve(standalone_question)
+            except Exception as exc:
+                # The embedding call inside retrieve() has no fallback of
+                # its own (unlike generate_answer() below) -- an invalid
+                # API key or a dead embedding endpoint would otherwise
+                # crash this whole method with a raw traceback reaching the
+                # Streamlit UI. Degrade the same way generate_answer() does.
+                logger.exception("Retrieval failed")
+                answer = AUTH_ERROR_MESSAGE if _is_permanent_auth_error(exc) else SERVICE_UNAVAILABLE_MESSAGE
+                self.memory.add_turn(question, answer)
+                run_data["answer"] = answer
+                run_data["retrieved_chunks"] = []
+                return {"answer": answer, "sources": [], "confidence": 0.0, "grounded": True}
 
             if not chunks:
                 # No relevant context at all -- return the required fallback

@@ -71,6 +71,12 @@ class Settings:
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     gemini_chat_model: str = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.6-flash")
     gemini_temperature: float = float(os.getenv("GEMINI_TEMPERATURE", "0.1"))
+    # Gemini's free tier caps CHAT generation at a much stricter ~5
+    # requests/minute (separate from the embedding quota above). Both the
+    # chat call and the query-rewrite call draw from this same quota, so
+    # asking 2-3 questions in a row can exhaust it -- this paces both
+    # proactively instead of letting the app fail and retry blindly.
+    gemini_chat_requests_per_minute: int = int(os.getenv("GEMINI_CHAT_REQUESTS_PER_MINUTE", "5"))
 
     # -- Databricks (used when LLM_PROVIDER=databricks and/or --------------------
     # -- EMBEDDING_PROVIDER=databricks) -------------------------------------------

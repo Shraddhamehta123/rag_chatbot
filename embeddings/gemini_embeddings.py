@@ -33,61 +33,16 @@
 #   Output: list of float vectors (or one vector for embed_query).
 # ==============================================================================
 
-import collections
-import threading
-import time
-from typing import Deque, List
+from typing import List
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config.settings import settings
 from embeddings.base import EmbeddingProvider
 from utils.logging_utils import get_logger
+from utils.rate_limiter import SlidingWindowRateLimiter
 
 logger = get_logger(__name__)
-
-
-class _SlidingWindowRateLimiter:
-    """
-    Caps how many "units" (here: individual texts embedded) are sent within
-    any trailing 60-second window, sleeping just long enough to stay under
-    the cap rather than firing requests until the API itself rejects them.
-
-    WHY THIS EXISTS: Gemini's free tier enforces ~100 embed_content
-    "requests" per minute, and critically, each text inside one batched
-    `embed_content(content=[...])` call counts as its own request against
-    that quota -- so batching alone does not avoid the limit, only pacing
-    does. Proactively throttling here turns "ingestion crashes on chunk 101"
-    into "ingestion takes a bit longer but finishes reliably."
-    """
-
-    def __init__(self, max_per_minute: int):
-        self._max_per_minute = max_per_minute
-        self._timestamps: Deque[float] = collections.deque()
-        self._lock = threading.Lock()
-
-    def acquire(self, units: int) -> None:
-        with self._lock:
-            while True:
-                now = time.monotonic()
-                # Drop timestamps older than the trailing 60-second window.
-                while self._timestamps and now - self._timestamps[0] > 60:
-                    self._timestamps.popleft()
-
-                if len(self._timestamps) + units <= self._max_per_minute:
-                    self._timestamps.extend([now] * units)
-                    return
-
-                # Sleep until the oldest request in the window expires,
-                # freeing up enough capacity for this batch.
-                sleep_for = 60 - (now - self._timestamps[0]) + 0.1
-                logger.info(
-                    "Pacing embedding requests to stay under the %d/min quota "
-                    "-- sleeping %.1fs",
-                    self._max_per_minute,
-                    sleep_for,
-                )
-                time.sleep(max(sleep_for, 0.1))
 
 
 class GeminiEmbeddingProvider(EmbeddingProvider):
@@ -99,7 +54,9 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         genai.configure(api_key=api_key)
         self._genai = genai
         self._model_name = model_name
-        self._rate_limiter = _SlidingWindowRateLimiter(settings.gemini_embedding_requests_per_minute)
+        self._rate_limiter = SlidingWindowRateLimiter(
+            settings.gemini_embedding_requests_per_minute, name="Gemini embedding requests"
+        )
         logger.info("Gemini embedding provider ready (model='%s')", model_name)
 
     @retry(

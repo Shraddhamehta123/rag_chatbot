@@ -40,6 +40,7 @@ from typing import List, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from rag_pipeline.llm_service import acquire_chat_slot
 from utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -80,6 +81,7 @@ def rewrite_query(question: str, chat_history: List[Tuple[str, str]], llm) -> st
     ]
 
     try:
+        acquire_chat_slot()
         response = llm.invoke(messages)
         rewritten = response.content.strip()
         if rewritten:
