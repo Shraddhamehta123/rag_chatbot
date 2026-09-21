@@ -1,1 +1,239 @@
-# rag_chatbot
+# Aetna Insurance Assistant — Local RAG Chatbot
+
+A Retrieval-Augmented Generation (RAG) chatbot that answers member, provider,
+and policy questions using your official insurance plan documents (Evidence
+of Coverage, Summary of Benefits, and related policy manuals). Built to run
+entirely on a single machine — no cloud infrastructure required to try it out.
+
+## 1. Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              BACKEND (Python)                            │
+│                                                                           │
+│  data/pdfs/*.pdf                                                         │
+│        │                                                                 │
+│        ▼                                                                 │
+│  ingestion/pdf_loader.py        [PyMuPDF: load + parse, page-by-page]   │
+│        │                                                                 │
+│        ▼                                                                 │
+│  chunking/chunker.py            [RecursiveCharacterTextSplitter          │
+│        │                          1000/200, + file/page/type metadata]  │
+│        ▼                                                                 │
+│  embeddings/embedding_service.py [pluggable: local (sentence-transformers)│
+│        │                          or Gemini (gemini-embedding-001)]      │
+│        ▼                                                                 │
+│  vector_store/                                                          │
+│    chroma_manager.py            [ChromaDB: similarity search index]     │
+│    metadata_table.py            [SQLite: "Delta Table" analog, audit +  │
+│                                    idempotent re-ingestion tracking]     │
+│        │                                                                 │
+│        ▼                                                                 │
+│  rag_pipeline/                                                          │
+│    retrieval_service.py    top-K + score threshold + hybrid (BM25)      │
+│    reranker.py              optional cross-encoder re-scoring           │
+│    query_rewriter.py        follow-up question -> standalone question   │
+│    memory.py                 capped conversation history                │
+│    guardrails.py            input/output safety checks                  │
+│    prompt_templates.py      grounded system prompt + citation format    │
+│    rag_pipeline.py           RAGPipeline: retrieve→context→generate     │
+│        │                                                                 │
+│        ▼                                                                 │
+│  Gemini Chat Model (gemini-3.6-flash)  ──► grounded, cited answer       │
+│        │                                                                 │
+└────────┼──────────────────────────────────────────────────────────────┘
+         ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     FRONTEND: frontend/app.py (Streamlit)                │
+│         Chat box only — no upload UI. Ingestion is fully backend-owned.  │
+│         Shows: answer, expandable source citations, confidence, sidebar │
+│         (model info, indexed chunk count, debug mode), clear-chat.       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Observability: utils/mlflow_tracking.py logs every question as a local
+MLflow run (params, latency, token estimates, retrieved sources) — browse
+with `mlflow ui` from the project root.
+```
+
+## 2. Why these choices (and what changed from a generic template)
+
+This project reconciles a request that mixed two incompatible worlds: a
+Databricks/Azure-OpenAI-flavored architecture spec, and an actual ask to
+"run locally as easily as possible" with a Gemini API key. Local equivalents
+were used everywhere a heavy managed service was implied:
+
+| Spec asked for | This project uses | Why |
+|---|---|---|
+| Databricks Vector Search | **ChromaDB** (on-disk) | Zero setup, no cluster, same "index + similarity search" role |
+| Databricks Delta Table | **SQLite** (`vector_store/metadata_table.py`) | Same schema, same structured/queryable role, zero server |
+| Databricks Secret Scope | **`.env` file** (gitignored) | `config/settings.py` isolates all secret reads to one file, so swapping the *source* later is a one-file change |
+| Azure OpenAI / `text-embedding-3-large` | **Pluggable provider**: local `sentence-transformers` (free/offline) or Gemini `gemini-embedding-001` | Matches the actual Gemini-only key you have; local is the zero-cost default, Gemini is the Phase 2 / sandbox-compatible option |
+| MLflow on a Databricks tracking server | **MLflow, local file store** (`mlruns/`) | Identical `mlflow.log_*` API; only the tracking URI differs |
+
+## 3. Setup (unrestricted machine — recommended path)
+
+```bash
+git clone <this repo>
+cd rag_chatbot
+python3 -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+
+cp .env.example .env
+# Edit .env and set GEMINI_API_KEY (get one free at https://aistudio.google.com/apikey)
+# Leave EMBEDDING_PROVIDER=local for a fully free embedding pipeline.
+
+python -m scripts.ingest           # one-time: indexes data/pdfs/*.pdf
+streamlit run frontend/app.py      # opens the chat UI in your browser
+```
+
+Add your own PDFs by dropping them into `data/pdfs/` and re-running
+`python -m scripts.ingest` (or just restarting the Streamlit app — it
+auto-detects new/changed files via a content hash and only processes what's
+new).
+
+## 4. Switching embedding providers (Phase 1 → Phase 2)
+
+Everything routes through `embeddings/embedding_service.py`, so this is a
+one-line change in `.env`:
+
+```bash
+EMBEDDING_PROVIDER=local     # free, offline, sentence-transformers (default)
+EMBEDDING_PROVIDER=gemini    # hosted, uses your GEMINI_API_KEY, no model download
+```
+
+**Important:** switching providers changes the vector space. Re-run
+`python -m scripts.ingest --force` equivalent (or simply delete
+`vectorstore_db/` and re-run `python -m scripts.ingest`) after switching —
+old vectors from one provider are not comparable to query vectors from the
+other.
+
+## 5. Fully keyless mode: replacing Gemini with Databricks-hosted models
+
+Every LLM API normally requires your app to hold a secret credential. This
+project supports one deployment mode that genuinely doesn't: running inside
+Databricks itself, calling Databricks Foundation Model APIs.
+
+```bash
+LLM_PROVIDER=databricks
+EMBEDDING_PROVIDER=databricks
+# DATABRICKS_HOST / DATABRICKS_TOKEN can stay blank when this app runs
+# inside a Databricks notebook, job, or App -- auth is then fully automatic.
+```
+
+With both switches set, `GEMINI_API_KEY` is never read (`config/settings.py`
+only requires it when a provider is actually `"gemini"`) — Gemini is
+completely out of the runtime path. `rag_pipeline/llm_service.py` and
+`embeddings/embedding_service.py` are the two factories that dispatch on
+these switches; nothing else in the app needs to change.
+
+**Tested vs. not tested:** the provider-dispatch logic itself is covered by
+`tests/test_provider_switching.py` (mocked, no real endpoint). Actually
+calling a live Databricks Model Serving endpoint could **not** be tested in
+this project's own build sandbox — there's no Databricks workspace attached
+there. Smoke-test `LLM_PROVIDER=databricks` against your real workspace
+before relying on it.
+
+**Dependency note:** `requirements.txt` pins the older `langchain-databricks`
+package rather than the newer `databricks-langchain`, because the newer one
+pulls in `langchain-core` 1.x, which conflicts with `langchain-google-genai`
+and with the MLflow version this project's local file-store tracking depends
+on. If you go fully keyless (drop Gemini entirely), you can safely upgrade
+to `databricks-langchain` and remove the Gemini-specific pins.
+
+## 6. A note on this project's own development/test sandbox
+
+This app was built and smoke-tested inside a network-restricted cloud
+sandbox. Two sandbox-specific constraints are worth knowing about if you hit
+them in a similar restricted environment (they do **not** apply on a normal
+laptop/server with open internet access):
+
+- **`huggingface.co` may be blocked** by an egress policy in some sandboxes.
+  The `local` embedding provider downloads its model from the Hugging Face
+  Hub on first use, so it will fail there — use `EMBEDDING_PROVIDER=gemini`
+  instead in that environment. The `reranker` (cross-encoder) has the same
+  dependency and degrades gracefully (logs a warning, skips reranking)
+  rather than crashing if it can't download its model.
+- **No browser/port-forwarding was available** in that sandbox, so the
+  Streamlit UI itself could only be smoke-tested for "does the process boot
+  and serve HTTP" (`curl localhost:8501`), not a real interactive
+  walkthrough. A live, interactive test of the chat UI should be done on
+  your own machine or any environment with normal port access.
+- Gemini model names move fast. If `GEMINI_CHAT_MODEL` or
+  `GEMINI_EMBEDDING_MODEL` ever 404s with a "no longer available" message,
+  call `GET https://generativelanguage.googleapis.com/v1beta/models?key=YOUR_KEY`
+  to see current model names and update `.env`.
+- The Gemini free tier caps embedding calls at roughly 100/minute, and each
+  text in a batch counts individually against that quota. `scripts/ingest.py`
+  paces itself under this limit automatically when `EMBEDDING_PROVIDER=gemini`
+  (see `embeddings/gemini_embeddings.py`'s rate limiter) — ingesting a few
+  hundred chunks may take several minutes on the free tier. This does not
+  apply to the `local` provider, which has no API rate limit.
+
+## 7. Testing
+
+```bash
+pytest
+```
+
+The full suite (`tests/`) runs offline and deterministically: `conftest.py`
+swaps in a fake, hash-based embedding provider and points every on-disk
+store (Chroma, SQLite, MLflow) at a fresh temp directory per test, and the
+one test that reaches "the LLM" mocks `ChatGoogleGenerativeAI.invoke`
+directly — no real API key or network call is exercised by the test suite.
+
+## 8. Enhancements already built in
+
+- **Conversational memory** (`rag_pipeline/memory.py`) — capped chat history for natural follow-ups.
+- **Hybrid search** (`rag_pipeline/retrieval_service.py`) — vector + BM25 keyword blend, toggle via `ENABLE_HYBRID_SEARCH`.
+- **Query rewriting** (`rag_pipeline/query_rewriter.py`) — follow-ups rewritten into standalone questions before retrieval.
+- **Reranking** (`rag_pipeline/reranker.py`) — optional CPU cross-encoder re-scoring, toggle via `ENABLE_RERANKING`.
+- **Feedback logging** (`utils/feedback_logger.py`) — 👍/👎 buttons in the UI append to a local `.jsonl` file.
+- **Guardrails** (`rag_pipeline/guardrails.py`) — prompt-injection denylist + lexical grounding check on every answer.
+- **Source citations + confidence** — every answer shows an expandable source panel and a retrieval-based confidence score.
+- **Follow-up handling** — covered jointly by memory + query rewriting above.
+
+## 9. Path to a real Databricks/production deployment
+
+Nothing in this codebase needs to change structurally to move to Databricks
+— only the modules explicitly called out in section 2's table get swapped.
+The LLM and embedding swap (item 0 below) is already done — see section 5.
+
+0. Chat + embeddings → set `LLM_PROVIDER=databricks` and
+   `EMBEDDING_PROVIDER=databricks` (section 5). Already implemented and
+   config-driven; no code change needed for this part.
+1. `vector_store/chroma_manager.py` → a thin wrapper around a Databricks
+   Vector Search endpoint + index (`databricks-vectorsearch` SDK), synced
+   from a real Delta table.
+2. `vector_store/metadata_table.py` → the SQLite calls become Delta table
+   writes/reads via Spark or the Databricks SQL connector, using the exact
+   same schema already defined here.
+3. `config/settings.py` → read secrets via `dbutils.secrets.get(scope, key)`
+   instead of `os.getenv`, since it's the only file that touches secrets.
+4. `utils/mlflow_tracking.py` → change one line,
+   `mlflow.set_tracking_uri(...)`, to point at the workspace-hosted tracking
+   server instead of a local `mlruns/` folder; every `mlflow.log_*` call is
+   unchanged.
+5. Deploy `frontend/app.py` as a Databricks App (or any standard Streamlit
+   host) instead of running it locally.
+
+## 10. Project structure
+
+```
+rag_chatbot/
+├── data/pdfs/                  # source PDFs (backend-managed, no upload UI)
+├── ingestion/pdf_loader.py
+├── chunking/chunker.py
+├── embeddings/                 # base.py, local_embeddings.py, gemini_embeddings.py, embedding_service.py
+├── vector_store/                # chroma_manager.py, metadata_table.py
+├── rag_pipeline/                # retrieval_service, reranker, query_rewriter, memory, guardrails, prompt_templates, rag_pipeline
+├── frontend/app.py              # Streamlit chat-only UI
+├── config/settings.py
+├── utils/                       # logging_utils, mlflow_tracking, feedback_logger
+├── scripts/ingest.py            # CLI + auto-ingest entry point
+├── tests/                       # pytest suite
+├── conftest.py                  # shared fixtures (fake embeddings, temp stores)
+├── requirements.txt
+├── .env.example
+└── README.md
+```
