@@ -115,6 +115,18 @@ class RAGPipeline:
         Runs vector (+ optional hybrid) search via retrieval_service, then
         optional cross-encoder reranking, returning the final ranked list
         the rest of the pipeline should treat as "the evidence".
+
+        The score threshold is enforced TWICE: once inside
+        retrieval_service.retrieve() on the vector/hybrid score, and again
+        here on the final score actually shown to the user. Reranking can
+        assign a candidate a very different (and more accurate) score than
+        the first stage did -- a chunk that barely cleared the first
+        threshold can still get a near-zero cross-encoder score, and
+        without this second check it would still be displayed as a
+        "source" despite being effectively irrelevant. This is also why
+        the result here can be shorter than top_k, or empty: a fixed
+        source count that pads out with weak matches is exactly what a
+        real relevance threshold is supposed to prevent.
         """
         chunks = retrieval_service.retrieve(question)
         if not chunks:
@@ -141,6 +153,7 @@ class RAGPipeline:
                     page_number=d["page_number"],
                 )
                 for d in reranked_dicts
+                if d.get("rerank_score", d["score"]) >= settings.score_threshold
             ]
 
         return chunks[: settings.top_k]

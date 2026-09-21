@@ -124,7 +124,15 @@ class Settings:
 
     # -- Retrieval ----------------------------------------------------------------
     top_k: int = int(os.getenv("TOP_K", "5"))
-    score_threshold: float = float(os.getenv("SCORE_THRESHOLD", "0.0"))
+    # A threshold of 0.0 filters nothing, which means the app would always
+    # show exactly top_k "sources" even when none of them are actually
+    # relevant -- a fixed-size list of citations, some scoring ~0, is
+    # actively misleading in an insurance context. 0.3 is a deliberately
+    # moderate default: high enough to drop obviously irrelevant chunks,
+    # low enough not to hide a genuinely useful but imperfect match. Tune
+    # this against your own retrieved-score distribution once you have
+    # real usage data; there is nothing universal about 0.3 itself.
+    score_threshold: float = float(os.getenv("SCORE_THRESHOLD", "0.3"))
     enable_hybrid_search: bool = _bool_env("ENABLE_HYBRID_SEARCH", True)
     enable_reranking: bool = _bool_env("ENABLE_RERANKING", True)
     reranker_model: str = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")

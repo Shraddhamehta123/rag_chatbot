@@ -66,6 +66,12 @@ def isolated_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "feedback_log_path", str(tmp_path / "feedback.jsonl"))
     monkeypatch.setattr(settings, "enable_reranking", False)  # avoid HF model download in tests
     monkeypatch.setattr(settings, "gemini_api_key", "test-key-not-real")
+    # The production default score_threshold (0.3) is meaningless against
+    # FakeEmbeddingProvider's hash-based vectors, which carry no real
+    # semantic similarity -- tests that expect a seeded chunk to be found
+    # would fail or pass arbitrarily depending on hash luck. Tests that
+    # specifically exercise threshold filtering pass an explicit value.
+    monkeypatch.setattr(settings, "score_threshold", 0.0)
     # Gemini's real chat quota is only 5/minute; without this, a handful of
     # tests calling the (mocked) chat model in the same process would
     # actually sleep for real, since the rate limiter runs regardless of
