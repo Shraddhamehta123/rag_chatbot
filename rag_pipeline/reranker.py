@@ -33,6 +33,7 @@
 #   score, each candidate dict gaining a "rerank_score" key.
 # ==============================================================================
 
+import math
 from typing import Any, Dict, List, Optional
 
 from config.settings import settings
@@ -95,9 +96,15 @@ def rerank(question: str, candidates: List[Dict[str, Any]]) -> List[Dict[str, An
         return candidates
 
     pairs = [(question, c["chunk_text"]) for c in candidates]
-    scores = model.predict(pairs)
+    raw_scores = model.predict(pairs)
 
-    for candidate, score in zip(candidates, scores):
-        candidate["rerank_score"] = float(score)
+    for candidate, raw_score in zip(candidates, raw_scores):
+        # ms-marco cross-encoders output a raw, UNBOUNDED logit (can be
+        # strongly negative for an irrelevant pair, e.g. -9.93) -- not a
+        # 0-1 relevance score. Squashing it through a sigmoid gives a
+        # calibrated-looking probability in (0, 1) that's safe to average
+        # into a "confidence" percentage for the UI. Sigmoid is monotonic,
+        # so this changes nothing about the resulting sort order below.
+        candidate["rerank_score"] = 1.0 / (1.0 + math.exp(-float(raw_score)))
 
     return sorted(candidates, key=lambda c: c["rerank_score"], reverse=True)
