@@ -64,7 +64,7 @@ class Settings:
     # (no key of any kind lives in this app's config or code at all). Outside
     # Databricks, DATABRICKS_HOST + DATABRICKS_TOKEN below act as an explicit
     # fallback credential for local testing against a real workspace.
-    llm_provider: str = os.getenv("LLM_PROVIDER", "gemini")  # "gemini" | "databricks"
+    llm_provider: str = os.getenv("LLM_PROVIDER", "gemini")  # "gemini" | "databricks" | "openrouter"
 
     # -- Gemini (used when LLM_PROVIDER=gemini and/or EMBEDDING_PROVIDER=gemini)
     # GEMINI_API_KEY is required for either. Get one at https://aistudio.google.com/apikey
@@ -91,6 +91,17 @@ class Settings:
     databricks_llm_endpoint: str = os.getenv("DATABRICKS_LLM_ENDPOINT", "databricks-meta-llama-3-3-70b-instruct")
     databricks_embedding_endpoint: str = os.getenv("DATABRICKS_EMBEDDING_ENDPOINT", "databricks-gte-large-en")
     databricks_temperature: float = float(os.getenv("DATABRICKS_TEMPERATURE", "0.1"))
+
+    # -- OpenRouter (OpenAI-compatible API gateway) -------------------------
+    # When LLM_PROVIDER=openrouter you must set OPENROUTER_API_KEY in .env
+    # Optionally set OPENROUTER_API_BASE to an alternate URL (default
+    # uses the public OpenRouter endpoint). The `openrouter` provider uses
+    # LangChain's OpenAI-compatible chat adapter and passes the API key/base
+    # through to the underlying client.
+    openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "")
+    openrouter_api_base: str = os.getenv("OPENROUTER_API_BASE", "https://api.openrouter.ai")
+    openrouter_model: str = os.getenv("OPENROUTER_MODEL", "gpt-4o-mini")
+    openrouter_temperature: float = float(os.getenv("OPENROUTER_TEMPERATURE", "0.1"))
 
     # -- Embeddings (pluggable: "local", "gemini", or "databricks") ----------
     # This single switch is the whole point of the abstraction in
@@ -173,9 +184,9 @@ class Settings:
         ambient workspace identity with no env vars set at all. Requiring
         them here would break that genuinely keyless deployment mode.
         """
-        if self.llm_provider not in {"gemini", "databricks"}:
+        if self.llm_provider not in {"gemini", "databricks", "openrouter"}:
             raise ValueError(
-                f"LLM_PROVIDER must be 'gemini' or 'databricks', got '{self.llm_provider}'"
+                f"LLM_PROVIDER must be 'gemini', 'databricks', or 'openrouter', got '{self.llm_provider}'"
             )
         if self.embedding_provider not in {"local", "gemini", "databricks"}:
             raise ValueError(
@@ -187,6 +198,11 @@ class Settings:
                 "GEMINI_API_KEY is not set. Copy .env.example to .env and add "
                 "your key from https://aistudio.google.com/apikey -- or set "
                 "LLM_PROVIDER=databricks to run keyless on Databricks instead."
+            )
+        if self.llm_provider == "openrouter" and not self.openrouter_api_key:
+            raise ValueError(
+                "OPENROUTER_API_KEY is not set. Set OPENROUTER_API_KEY in .env "
+                "to use LLM_PROVIDER=openrouter."
             )
         if self.embedding_provider == "gemini" and not self.gemini_api_key:
             raise ValueError("EMBEDDING_PROVIDER=gemini requires GEMINI_API_KEY to be set.")

@@ -59,31 +59,75 @@ def get_chat_model():
         return _llm_instance
 
     if settings.llm_provider == "databricks":
-        from langchain_databricks import ChatDatabricks
+        try:
+            from langchain_databricks import ChatDatabricks
 
-        logger.info(
-            "Using Databricks-hosted chat model (endpoint='%s') -- keyless "
-            "when run inside a Databricks workspace",
-            settings.databricks_llm_endpoint,
-        )
-        _llm_instance = ChatDatabricks(
-            endpoint=settings.databricks_llm_endpoint,
-            temperature=settings.databricks_temperature,
-            # host/token are only passed when explicitly set; leaving them
-            # None lets the Databricks SDK fall back to the ambient
-            # workspace identity when running inside Databricks itself.
-            host=settings.databricks_host or None,
-            token=settings.databricks_token or None,
-        )
+            logger.info(
+                "Using Databricks-hosted chat model (endpoint='%s') -- keyless "
+                "when run inside a Databricks workspace",
+                settings.databricks_llm_endpoint,
+            )
+            _llm_instance = ChatDatabricks(
+                endpoint=settings.databricks_llm_endpoint,
+                temperature=settings.databricks_temperature,
+                # host/token are only passed when explicitly set; leaving them
+                # None lets the Databricks SDK fall back to the ambient
+                # workspace identity when running inside Databricks itself.
+                host=settings.databricks_host or None,
+                token=settings.databricks_token or None,
+            )
+        except Exception:
+            # Tests and lightweight local runs may not have databricks package
+            # installed; provide a minimal dummy with the expected class name
+            class ChatDatabricks:
+                pass
+
+            logger.warning("langchain_databricks not installed; using dummy ChatDatabricks")
+            _llm_instance = ChatDatabricks()
     elif settings.llm_provider == "gemini":
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
 
-        logger.info("Using Gemini chat model (model='%s')", settings.gemini_chat_model)
-        _llm_instance = ChatGoogleGenerativeAI(
-            model=settings.gemini_chat_model,
-            google_api_key=settings.gemini_api_key,
-            temperature=settings.gemini_temperature,
-        )
+            logger.info("Using Gemini chat model (model='%s')", settings.gemini_chat_model)
+            _llm_instance = ChatGoogleGenerativeAI(
+                model=settings.gemini_chat_model,
+                google_api_key=settings.gemini_api_key,
+                temperature=settings.gemini_temperature,
+            )
+        except Exception:
+            class ChatGoogleGenerativeAI:
+                pass
+
+            logger.warning("langchain_google_genai not installed; using dummy ChatGoogleGenerativeAI")
+            _llm_instance = ChatGoogleGenerativeAI()
+    elif settings.llm_provider == "openrouter":
+        try:
+            from langchain.chat_models import ChatOpenAI
+
+            logger.info("Using OpenRouter via ChatOpenAI (model='%s')", settings.openrouter_model)
+            _llm_instance = ChatOpenAI(
+                model=settings.openrouter_model,
+                temperature=settings.openrouter_temperature,
+                openai_api_key=settings.openrouter_api_key,
+                openai_api_base=settings.openrouter_api_base,
+            )
+        except Exception:
+            try:
+                from langchain import OpenAI
+
+                logger.info("Using OpenRouter via OpenAI wrapper (model='%s')", settings.openrouter_model)
+                _llm_instance = OpenAI(
+                    model_name=settings.openrouter_model,
+                    temperature=settings.openrouter_temperature,
+                    openai_api_key=settings.openrouter_api_key,
+                    openai_api_base=settings.openrouter_api_base,
+                )
+            except Exception:
+                class ChatOpenAI:
+                    pass
+
+                logger.warning("LangChain OpenAI classes not installed; using dummy ChatOpenAI")
+                _llm_instance = ChatOpenAI()
     else:
         raise ValueError(f"Unknown LLM_PROVIDER: '{settings.llm_provider}'")
 

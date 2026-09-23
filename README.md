@@ -80,8 +80,14 @@ source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Edit .env and set GEMINI_API_KEY (get one free at https://aistudio.google.com/apikey)
-# Leave EMBEDDING_PROVIDER=local for a fully free embedding pipeline.
+# Edit `.env` and set `GEMINI_API_KEY` (get one free at https://aistudio.google.com/apikey)
+# Leave `EMBEDDING_PROVIDER=local` for a fully free embedding pipeline.
+# To use OpenRouter as an alternative OpenAI-compatible gateway, add:
+#
+# LLM_PROVIDER=openrouter
+# OPENROUTER_API_KEY=your_openrouter_api_key
+# Optional: OPENROUTER_API_BASE=https://api.openrouter.ai
+# Optional: OPENROUTER_MODEL=gpt-4o-mini
 
 python -m scripts.ingest           # one-time: indexes data/pdfs/*.pdf
 streamlit run frontend/app.py      # opens the chat UI in your browser

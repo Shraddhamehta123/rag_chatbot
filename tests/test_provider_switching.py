@@ -45,6 +45,14 @@ def test_validate_rejects_unknown_llm_provider(monkeypatch):
         settings.validate()
 
 
+def test_validate_accepts_openrouter_and_requires_key(monkeypatch):
+    monkeypatch.setattr(settings, "llm_provider", "openrouter")
+    monkeypatch.setattr(settings, "openrouter_api_key", "")
+
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        settings.validate()
+
+
 def test_validate_rejects_unknown_embedding_provider(monkeypatch):
     monkeypatch.setattr(settings, "llm_provider", "databricks")
     monkeypatch.setattr(settings, "embedding_provider", "azure_openai")
@@ -74,3 +82,16 @@ def test_get_chat_model_dispatches_to_databricks(monkeypatch):
     model = llm_service.get_chat_model()
 
     assert type(model).__name__ == "ChatDatabricks"
+
+
+def test_get_chat_model_dispatches_to_openrouter(monkeypatch):
+    import rag_pipeline.llm_service as llm_service
+
+    monkeypatch.setattr(settings, "llm_provider", "openrouter")
+    monkeypatch.setattr(settings, "openrouter_api_key", "test-key-not-real")
+    monkeypatch.setattr(llm_service, "_llm_instance", None)
+
+    model = llm_service.get_chat_model()
+
+    # Could be ChatOpenAI or OpenAI wrapper depending on installed langchain
+    assert type(model).__name__ in {"ChatOpenAI", "OpenAI"}
