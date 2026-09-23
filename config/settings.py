@@ -97,7 +97,16 @@ class Settings:
     # embeddings/: change EMBEDDING_PROVIDER once you're ready to move off
     # free local embeddings, and nothing else in the app changes.
     embedding_provider: str = os.getenv("EMBEDDING_PROVIDER", "local")  # "local" | "gemini" | "databricks"
-    local_embedding_model: str = os.getenv("LOCAL_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    # Chosen empirically, not by default: scripts/evaluate_embeddings.py's
+    # MTEB-style evaluation (Recall@K + MRR against this project's own real
+    # documents and 20 hand-verified questions) measured all-mpnet-base-v2
+    # at MRR=0.950, clearly ahead of the original all-MiniLM-L6-v2 default.
+    # It's a larger model (~420MB vs. ~80MB) and somewhat slower to embed
+    # with, but for a single-user local app that trade favors accuracy. If
+    # you add substantially different documents later, re-run that
+    # evaluation -- the best model for one corpus isn't guaranteed to stay
+    # best for another.
+    local_embedding_model: str = os.getenv("LOCAL_EMBEDDING_MODEL", "sentence-transformers/all-mpnet-base-v2")
     gemini_embedding_model: str = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001")
     embedding_batch_size: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
     # Gemini's free tier caps embed_content at ~100 requests/minute, and each
