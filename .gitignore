@@ -11,6 +11,7 @@ venv/
 # Local data stores generated at runtime (rebuildable from data/pdfs/ via scripts/ingest.py)
 vectorstore_db/
 mlruns/
+eval_results/
 
 # OS / editor cruft
 .DS_Store

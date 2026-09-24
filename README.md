@@ -127,12 +127,31 @@ python -m scripts.evaluate_embeddings
 This downloads a handful of candidate models (see `CANDIDATE_MODELS` at the
 top of `scripts/evaluate_embeddings.py` — edit that list to try others),
 embeds your real chunks and a set of hand-labeled real questions
-(`EVAL_QUESTIONS` in the same file), and reports the standard MTEB
-retrieval metrics (Recall@1/3/5, MRR) per model, ending with a
+(`EVAL_QUESTIONS`, shared from `scripts/eval_questions.py`), and reports
+Recall@1/3/5, Precision@1/3/5, NDCG@1/3/5, and MRR per model, ending with a
 recommendation and the exact `.env` line to apply it. Needs
 `huggingface.co` reachable (won't run in the network-restricted sandbox
 this project was partly built in — see section 7). After switching models,
-re-ingest as described above.
+re-ingest as described above. Output is printed only, not saved anywhere.
+
+**Important:** this evaluates raw embedding-model similarity only — no
+hybrid search, reranking, or score threshold, so it doesn't reflect what a
+real user actually gets back. To evaluate the full, deployed retrieval
+pipeline (the one real questions actually go through) against the same
+ground truth, run:
+
+```bash
+python -m scripts.evaluate_retrieval   # needs the vector store already populated
+```
+
+This uses whichever provider/settings are currently in `.env`, reports the
+same four metrics, and — unlike the embedding-model comparison above —
+saves every individual question's result (not just the average) to
+`eval_results/retrieval_eval_<timestamp>.json`, so a specific regression can
+be traced back to the question that caused it. It also prints which
+questions missed the correct page within `TOP_K`, for quick debugging. The
+underlying metric formulas live in `utils/retrieval_metrics.py`, shared by
+both scripts so their numbers are directly comparable.
 
 ## 6. Fully keyless mode: replacing Gemini with Databricks-hosted models
 
@@ -218,6 +237,7 @@ directly — no real API key or network call is exercised by the test suite.
 - **Guardrails** (`rag_pipeline/guardrails.py`) — prompt-injection denylist + lexical grounding check on every answer.
 - **Source citations + confidence** — every answer shows an expandable source panel and a retrieval-based confidence score.
 - **Follow-up handling** — covered jointly by memory + query rewriting above.
+- **Retrieval evaluation** (`utils/retrieval_metrics.py`, `scripts/evaluate_embeddings.py`, `scripts/evaluate_retrieval.py`) — Recall@K, Precision@K, NDCG@K, and MRR against hand-labeled ground truth, for both a candidate embedding model in isolation and the full deployed pipeline — see section 5.
 
 ## 10. Path to a real Databricks/production deployment
 
@@ -257,6 +277,8 @@ rag_chatbot/
 ├── config/settings.py
 ├── utils/                       # logging_utils, mlflow_tracking, feedback_logger
 ├── scripts/ingest.py            # CLI + auto-ingest entry point
+├── scripts/evaluate_embeddings.py, evaluate_retrieval.py, eval_questions.py  # evaluation tooling
+├── utils/retrieval_metrics.py   # Recall@K, Precision@K, NDCG@K, MRR
 ├── tests/                       # pytest suite
 ├── conftest.py                  # shared fixtures (fake embeddings, temp stores)
 ├── requirements.txt

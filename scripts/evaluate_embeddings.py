@@ -18,6 +18,13 @@
 #     - Recall@K: out of all test questions, what fraction had the correct
 #                 chunk somewhere in the top K search results? We report
 #                 K=1, 3, and 5 (5 matches this app's default TOP_K).
+#     - Precision@K: of the K results actually returned, what fraction were
+#                 the correct chunk? With exactly one correct page per
+#                 question, this is naturally small (at most 1/K) -- expected,
+#                 not a bug: it penalizes returning K results when only one
+#                 could ever be right.
+#     - NDCG@K: like Recall@K, but rank-sensitive -- finding the correct
+#                 chunk at rank 1 scores higher than finding it at rank 5.
 #     - MRR (Mean Reciprocal Rank): for each question, score 1/rank of the
 #                 correct chunk's position (1st place = 1.0, 2nd = 0.5,
 #                 3rd = 0.33, never found = 0), then average across all
@@ -25,6 +32,11 @@
 #                 getting the right answer NEAR the top, not just
 #                 somewhere in a long list -- the standard primary metric
 #                 for comparing retrieval quality.
+#
+#   All four are computed by utils/retrieval_metrics.py, shared with
+#   scripts/evaluate_retrieval.py (which evaluates the full, deployed
+#   retrieval pipeline against this same ground truth, rather than a raw
+#   embedding model in isolation).
 #
 #   We deliberately do NOT install and run the `mteb` pip package itself.
 #   Its built-in datasets are general-purpose web/Wikipedia/news text --
@@ -66,7 +78,9 @@ import numpy as np
 from chunking.chunker import Chunk, chunk_documents
 from config.settings import settings
 from ingestion.pdf_loader import load_pdfs
+from scripts.eval_questions import EvalQuestion, EVAL_QUESTIONS
 from utils.logging_utils import get_logger
+from utils.retrieval_metrics import ndcg_at_k, precision_at_k, recall_at_k, reciprocal_rank
 
 logger = get_logger(__name__)
 
@@ -84,47 +98,6 @@ CANDIDATE_MODELS: List[str] = [
     "BAAI/bge-small-en-v1.5",  # similar size, usually more accurate
     "intfloat/e5-small-v2",  # similar size, retrieval-tuned
     "sentence-transformers/all-mpnet-base-v2",  # bigger, historically strong
-]
-
-
-@dataclass
-class EvalQuestion:
-    """One test question, paired with the exact source page that answers it."""
-
-    question: str
-    expected_file: str
-    expected_page: int
-
-
-# ------------------------------------------------------------------------------
-# EVAL QUESTIONS: hand-written against this project's REAL document content
-# ------------------------------------------------------------------------------
-# Each row is one realistic member question, paired with the
-# (file_name, page_number) that actually answers it -- verified by hand
-# against data/pdfs/*.pdf. This is the "ground truth" a good embedding
-# model should be able to find. Add more rows here whenever you add new
-# source documents; more eval questions make the comparison more reliable.
-EVAL_QUESTIONS: List[EvalQuestion] = [
-    EvalQuestion("What is the annual medical deductible?", "Summary_of_Benefits.pdf", 1),
-    EvalQuestion("What is the out-of-pocket maximum for a family?", "Summary_of_Benefits.pdf", 1),
-    EvalQuestion("How much is a primary care visit copay?", "Summary_of_Benefits.pdf", 2),
-    EvalQuestion("What do I pay for an emergency room visit?", "Summary_of_Benefits.pdf", 2),
-    EvalQuestion("How much does a generic Tier 1 drug cost?", "Summary_of_Benefits.pdf", 3),
-    EvalQuestion("Is routine dental cleaning covered?", "Summary_of_Benefits.pdf", 4),
-    EvalQuestion("How many eye exams are covered per year?", "Summary_of_Benefits.pdf", 4),
-    EvalQuestion("What is the definition of coinsurance?", "Evidence_of_Coverage.pdf", 12),
-    EvalQuestion("Are emergency services covered outside the network?", "Evidence_of_Coverage.pdf", 8),
-    EvalQuestion("What services are excluded from coverage?", "Evidence_of_Coverage.pdf", 9),
-    EvalQuestion("How many days do I have to file an appeal?", "Evidence_of_Coverage.pdf", 10),
-    EvalQuestion("What happens if I skip prior authorization?", "Evidence_of_Coverage.pdf", 3),
-    EvalQuestion("Does the deductible apply to preventive care visits?", "Evidence_of_Coverage.pdf", 7),
-    EvalQuestion("Can I add my spouse to my health plan?", "Policy_Manual.pdf", 1),
-    EvalQuestion("What is coordination of benefits?", "Policy_Manual.pdf", 3),
-    EvalQuestion("How long does a standard prior authorization review take?", "Policy_Manual.pdf", 4),
-    EvalQuestion("What are the two levels of the appeals process?", "Policy_Manual.pdf", 5),
-    EvalQuestion("How are network providers credentialed?", "Policy_Manual.pdf", 6),
-    EvalQuestion("How do I report suspected insurance fraud?", "Policy_Manual.pdf", 8),
-    EvalQuestion("How can I request a copy of my health records?", "Policy_Manual.pdf", 9),
 ]
 
 
@@ -155,6 +128,9 @@ def _cosine_similarity_matrix(query_vec: np.ndarray, chunk_vecs: np.ndarray) -> 
     return chunk_norms @ query_norm
 
 
+_K_VALUES = (1, 3, 5)
+
+
 @dataclass
 class ModelScore:
     """One candidate model's results across every metric."""
@@ -163,6 +139,12 @@ class ModelScore:
     recall_at_1: float
     recall_at_3: float
     recall_at_5: float
+    precision_at_1: float
+    precision_at_3: float
+    precision_at_5: float
+    ndcg_at_1: float
+    ndcg_at_3: float
+    ndcg_at_5: float
     mrr: float
     avg_query_embed_seconds: float
     load_seconds: float
@@ -170,16 +152,15 @@ class ModelScore:
 
 def evaluate_model(model_name: str, chunks: List[Chunk]) -> ModelScore:
     """
-    Score one embedding model against EVAL_QUESTIONS, computing the
-    standard MTEB retrieval metrics (Recall@K and MRR) by hand.
+    Score one embedding model against EVAL_QUESTIONS, computing Recall@K,
+    Precision@K, NDCG@K (utils/retrieval_metrics.py) and MRR.
 
     For every question:
       1. Embed the question with this model.
       2. Rank every real chunk by cosine similarity to that question.
       3. Find the rank of the first chunk whose (file_name, page_number)
          matches the question's known-correct answer.
-      4. Record whether that rank was <=1, <=3, <=5 (for Recall@K), and
-         1/rank (for MRR; 0 if the correct chunk never appears at all).
+      4. Feed that rank (or "not found") into the shared metric functions.
     """
     from sentence_transformers import SentenceTransformer
 
@@ -193,7 +174,9 @@ def evaluate_model(model_name: str, chunks: List[Chunk]) -> ModelScore:
     chunk_texts = [c.chunk_text for c in chunks]
     chunk_vecs = model.encode(chunk_texts, show_progress_bar=False, convert_to_numpy=True)
 
-    hits_at_1, hits_at_3, hits_at_5 = [], [], []
+    recalls = {k: [] for k in _K_VALUES}
+    precisions = {k: [] for k in _K_VALUES}
+    ndcgs = {k: [] for k in _K_VALUES}
     reciprocal_ranks = []
     query_embed_times = []
 
@@ -218,16 +201,26 @@ def evaluate_model(model_name: str, chunks: List[Chunk]) -> ModelScore:
                 found_rank = rank
                 break
 
-        hits_at_1.append(1 if found_rank is not None and found_rank <= 1 else 0)
-        hits_at_3.append(1 if found_rank is not None and found_rank <= 3 else 0)
-        hits_at_5.append(1 if found_rank is not None and found_rank <= 5 else 0)
-        reciprocal_ranks.append(1.0 / found_rank if found_rank is not None else 0.0)
+        # Exactly one relevant page per question -- see
+        # utils/retrieval_metrics.py for what num_relevant=1 means for each metric.
+        relevant_ranks = [found_rank] if found_rank is not None else []
+        for k in _K_VALUES:
+            recalls[k].append(recall_at_k(relevant_ranks, k, num_relevant=1))
+            precisions[k].append(precision_at_k(relevant_ranks, k))
+            ndcgs[k].append(ndcg_at_k(relevant_ranks, k, num_relevant=1))
+        reciprocal_ranks.append(reciprocal_rank(relevant_ranks))
 
     return ModelScore(
         model_name=model_name,
-        recall_at_1=float(np.mean(hits_at_1)),
-        recall_at_3=float(np.mean(hits_at_3)),
-        recall_at_5=float(np.mean(hits_at_5)),
+        recall_at_1=float(np.mean(recalls[1])),
+        recall_at_3=float(np.mean(recalls[3])),
+        recall_at_5=float(np.mean(recalls[5])),
+        precision_at_1=float(np.mean(precisions[1])),
+        precision_at_3=float(np.mean(precisions[3])),
+        precision_at_5=float(np.mean(precisions[5])),
+        ndcg_at_1=float(np.mean(ndcgs[1])),
+        ndcg_at_3=float(np.mean(ndcgs[3])),
+        ndcg_at_5=float(np.mean(ndcgs[5])),
         mrr=float(np.mean(reciprocal_ranks)),
         avg_query_embed_seconds=float(np.mean(query_embed_times)),
         load_seconds=load_seconds,
@@ -261,7 +254,15 @@ def main() -> None:
         scores.append(score)
         print(
             f"  Recall@1={score.recall_at_1:.0%}  Recall@3={score.recall_at_3:.0%}  "
-            f"Recall@5={score.recall_at_5:.0%}  MRR={score.mrr:.3f}  "
+            f"Recall@5={score.recall_at_5:.0%}  MRR={score.mrr:.3f}"
+        )
+        print(
+            f"  Precision@1={score.precision_at_1:.2f}  Precision@3={score.precision_at_3:.2f}  "
+            f"Precision@5={score.precision_at_5:.2f}"
+        )
+        print(
+            f"  NDCG@1={score.ndcg_at_1:.3f}  NDCG@3={score.ndcg_at_3:.3f}  "
+            f"NDCG@5={score.ndcg_at_5:.3f}  "
             f"avg_query_embed={score.avg_query_embed_seconds * 1000:.0f}ms  "
             f"load_time={score.load_seconds:.1f}s"
         )
