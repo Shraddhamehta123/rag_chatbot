@@ -30,7 +30,7 @@
 # INPUT / OUTPUT
 #   Input:  user's typed question via st.chat_input.
 #   Output: rendered chat bubbles, expandable source citations, a
-#           confidence score, and a sidebar with model info + debug mode.
+#           confidence score, and a sidebar with model info.
 # ==============================================================================
 
 import sys
@@ -77,8 +77,8 @@ def ensure_documents_ingested() -> dict:
     return run_ingestion()
 
 
-def render_sidebar() -> bool:
-    """Render the sidebar (model info, retrieved doc count, debug toggle)."""
+def render_sidebar() -> None:
+    """Render the sidebar (model info, retrieved doc count)."""
     with st.sidebar:
         st.header("Healthcare Insurance Assistant")
         st.caption("Ask about your coverage, benefits, and plan documents.")
@@ -103,18 +103,14 @@ def render_sidebar() -> bool:
             chunk_count = "unavailable"
         st.text(f"Indexed chunks: {chunk_count}")
 
-        debug_mode = st.toggle("Debug mode", value=False, help="Show raw retrieval scores and internals.")
-
         st.divider()
         if st.button("🗑️ Clear Chat", use_container_width=True):
             st.session_state.messages = []
             load_pipeline().memory.clear()
             st.rerun()
 
-        return debug_mode
 
-
-def render_sources(sources: list, debug_mode: bool) -> None:
+def render_sources(sources: list) -> None:
     """Render an expandable citation panel for one assistant message."""
     if not sources:
         return
@@ -129,11 +125,9 @@ def render_sources(sources: list, debug_mode: bool) -> None:
                 # Evidence of Coverage) set this -- see chunking/structure_chunker.py.
                 st.caption(f"{source.get('chapter_title', '')} › {source['section_title']}")
             st.progress(min(max(source["score"], 0.0), 1.0), text=f"Relevance score: {source['score']:.2f}")
-            if debug_mode:
-                st.caption(f"Raw score: {source['score']}")
 
 
-def render_assistant_message(index: int, message: dict, debug_mode: bool) -> None:
+def render_assistant_message(index: int, message: dict) -> None:
     """
     Render one assistant turn: answer text, sources, confidence, and the
     👍/👎 feedback buttons -- shared by both the chat-history replay loop and
@@ -148,10 +142,10 @@ def render_assistant_message(index: int, message: dict, debug_mode: bool) -> Non
     same message on the next rerun).
     """
     st.markdown(message["content"])
-    render_sources(message.get("sources", []), debug_mode)
+    render_sources(message.get("sources", []))
     if message.get("confidence") is not None:
         st.caption(f"Confidence: {message['confidence']:.0%}")
-    if debug_mode and message.get("grounded") is False:
+    if message.get("grounded") is False:
         st.warning("Grounding check flagged this answer as possibly not fully supported by the retrieved context.")
 
     col1, col2 = st.columns([1, 1])
@@ -176,7 +170,7 @@ def render_assistant_message(index: int, message: dict, debug_mode: bool) -> Non
 
 
 def main() -> None:
-    debug_mode = render_sidebar()
+    render_sidebar()
 
     st.title("🩺 Healthcare Insurance Assistant")
     st.caption(
@@ -202,7 +196,7 @@ def main() -> None:
     for i, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             if message["role"] == "assistant":
-                render_assistant_message(i, message, debug_mode)
+                render_assistant_message(i, message)
             else:
                 st.markdown(message["content"])
 
@@ -231,7 +225,7 @@ def main() -> None:
                 }
             )
             new_index = len(st.session_state.messages) - 1
-            render_assistant_message(new_index, st.session_state.messages[new_index], debug_mode)
+            render_assistant_message(new_index, st.session_state.messages[new_index])
 
 
 if __name__ == "__main__":

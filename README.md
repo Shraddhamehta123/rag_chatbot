@@ -50,8 +50,9 @@ entirely on a single machine — no cloud infrastructure required to try it out.
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                     FRONTEND: frontend/app.py (Streamlit)                │
 │         Chat box only — no upload UI. Ingestion is fully backend-owned.  │
-│         Shows: answer, expandable source citations, confidence, sidebar │
-│         (model info, indexed chunk count, debug mode), clear-chat.       │
+│         Shows: answer, expandable source citations, confidence, a        │
+│         grounding-check warning when flagged, sidebar (model info,       │
+│         indexed chunk count), clear-chat.                                 │
 └─────────────────────────────────────────────────────────────────────────┘
 
 Observability: utils/mlflow_tracking.py logs every question as a local
