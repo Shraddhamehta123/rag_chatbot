@@ -13,7 +13,7 @@ import pytest
 from chunking.chunker import Chunk
 from embeddings.embedding_service import generate_embeddings
 from rag_pipeline.prompt_templates import NOT_FOUND_MESSAGE
-from rag_pipeline.rag_pipeline import SERVICE_UNAVAILABLE_MESSAGE, RAGPipeline
+from rag_pipeline.rag_pipeline import AUTH_ERROR_MESSAGE, SERVICE_UNAVAILABLE_MESSAGE, RAGPipeline
 from rag_pipeline.retrieval_service import RetrievedChunk
 from vector_store import chroma_manager
 
@@ -119,6 +119,96 @@ def test_generate_answer_degrades_gracefully_when_llm_keeps_failing(pipeline, mo
     answer = pipeline.generate_answer("some context", "What is my deductible?")
 
     assert answer == SERVICE_UNAVAILABLE_MESSAGE
+
+
+def test_generate_answer_gives_distinct_message_for_a_dead_api_key(pipeline, monkeypatch):
+    import time
+
+    # A real 401 from Gemini (an invalid/revoked key) is a PERMANENT
+    # failure, not a transient rate limit -- confirmed by live testing
+    # against the actual API. It should fail fast (no wasted retry
+    # backoff) and get its own actionable message, not the generic
+    # "try again in a moment" one that wrongly implies waiting will help.
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+
+    call_count = {"n": 0}
+
+    def raises_auth_error(self, messages, **kwargs):
+        call_count["n"] += 1
+        raise RuntimeError(
+            "401 Unauthenticated: Request had invalid authentication credentials."
+        )
+
+    monkeypatch.setattr(type(pipeline._llm), "invoke", raises_auth_error)
+
+    answer = pipeline.generate_answer("some context", "What is my deductible?")
+
+    assert answer == AUTH_ERROR_MESSAGE
+    # Fails fast: no retry attempts wasted on a guaranteed-repeat failure.
+    assert call_count["n"] == 1
+
+
+def test_answer_question_degrades_gracefully_when_retrieval_fails(pipeline, monkeypatch):
+    # Simulate a dead embedding provider (e.g. same invalid key used for
+    # embeddings): retrieve() raising should not crash answer_question()
+    # with a raw traceback, the way chat-generation failures already don't.
+    def raises(question):
+        raise RuntimeError("401 Unauthenticated: invalid authentication credentials")
+
+    monkeypatch.setattr(pipeline, "retrieve", raises)
+
+    result = pipeline.answer_question("What is my annual deductible?")
+
+    assert result["answer"] == AUTH_ERROR_MESSAGE
+    assert result["sources"] == []
+    assert result["confidence"] == 0.0
+
+
+def test_retrieve_drops_chunks_that_score_low_after_reranking(pipeline, monkeypatch):
+    # Regression test for a real bug: the first-stage vector/hybrid
+    # threshold ran before reranking, but nothing re-checked the threshold
+    # against the FINAL score reranking assigned. A chunk that barely
+    # cleared the first filter could still get a near-zero cross-encoder
+    # score and still be shown to the user as a "source" -- exactly what
+    # was reported live ("some documents have relevance score as 0").
+    import rag_pipeline.rag_pipeline as rag_pipeline_module
+
+    monkeypatch.setattr(rag_pipeline_module.settings, "enable_reranking", True)
+    monkeypatch.setattr(rag_pipeline_module.settings, "score_threshold", 0.3)
+
+    relevant_chunk = Chunk(
+        chunk_id="relevant",
+        chunk_text="The annual deductible is $500.",
+        file_name="Summary_of_Benefits.pdf",
+        page_number=1,
+        document_type="Summary of Benefits",
+    )
+    irrelevant_chunk = Chunk(
+        chunk_id="irrelevant",
+        chunk_text="Two dental cleanings per year are covered.",
+        file_name="Summary_of_Benefits.pdf",
+        page_number=4,
+        document_type="Summary of Benefits",
+    )
+    embeddings = generate_embeddings(
+        [relevant_chunk.chunk_text, irrelevant_chunk.chunk_text]
+    )
+    chroma_manager.upsert_chunks([relevant_chunk, irrelevant_chunk], embeddings)
+
+    # Force the reranker's output deterministically: one clearly relevant
+    # score, one that a real cross-encoder would give an irrelevant pair.
+    def fake_rerank(question, candidates):
+        for c in candidates:
+            c["rerank_score"] = 0.9 if c["chunk_text"] == relevant_chunk.chunk_text else 0.02
+        return sorted(candidates, key=lambda c: c["rerank_score"], reverse=True)
+
+    monkeypatch.setattr(rag_pipeline_module, "rerank", fake_rerank)
+
+    results = pipeline.retrieve("What is my annual deductible?")
+
+    assert len(results) == 1
+    assert results[0].chunk_text == relevant_chunk.chunk_text
+    assert results[0].score == 0.9
 
 
 def test_answer_question_blocks_prompt_injection(pipeline):

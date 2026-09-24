@@ -43,7 +43,7 @@ _INJECTION_PATTERNS = [
     r"ignore (all )?(previous|prior|above) instructions",
     r"disregard (all )?(previous|prior|above) instructions",
     r"you are now",
-    r"act as (if you are|a) (?!.*aetna)",  # allow "act as an Aetna assistant" itself
+    r"act as (if you are|a) (?!.*healthcare insurance)",  # allow "act as a Healthcare Insurance Assistant" itself
     r"reveal your (system )?prompt",
     r"what (is|are) your (system )?(prompt|instructions)",
 ]

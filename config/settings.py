@@ -71,6 +71,12 @@ class Settings:
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     gemini_chat_model: str = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.6-flash")
     gemini_temperature: float = float(os.getenv("GEMINI_TEMPERATURE", "0.1"))
+    # Gemini's free tier caps CHAT generation at a much stricter ~5
+    # requests/minute (separate from the embedding quota above). Both the
+    # chat call and the query-rewrite call draw from this same quota, so
+    # asking 2-3 questions in a row can exhaust it -- this paces both
+    # proactively instead of letting the app fail and retry blindly.
+    gemini_chat_requests_per_minute: int = int(os.getenv("GEMINI_CHAT_REQUESTS_PER_MINUTE", "5"))
 
     # -- Databricks (used when LLM_PROVIDER=databricks and/or --------------------
     # -- EMBEDDING_PROVIDER=databricks) -------------------------------------------
@@ -91,7 +97,16 @@ class Settings:
     # embeddings/: change EMBEDDING_PROVIDER once you're ready to move off
     # free local embeddings, and nothing else in the app changes.
     embedding_provider: str = os.getenv("EMBEDDING_PROVIDER", "local")  # "local" | "gemini" | "databricks"
-    local_embedding_model: str = os.getenv("LOCAL_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    # Chosen empirically, not by default: scripts/evaluate_embeddings.py's
+    # MTEB-style evaluation (Recall@K + MRR against this project's own real
+    # documents and 20 hand-verified questions) measured all-mpnet-base-v2
+    # at MRR=0.950, clearly ahead of the original all-MiniLM-L6-v2 default.
+    # It's a larger model (~420MB vs. ~80MB) and somewhat slower to embed
+    # with, but for a single-user local app that trade favors accuracy. If
+    # you add substantially different documents later, re-run that
+    # evaluation -- the best model for one corpus isn't guaranteed to stay
+    # best for another.
+    local_embedding_model: str = os.getenv("LOCAL_EMBEDDING_MODEL", "sentence-transformers/all-mpnet-base-v2")
     gemini_embedding_model: str = os.getenv("GEMINI_EMBEDDING_MODEL", "models/gemini-embedding-001")
     embedding_batch_size: int = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
     # Gemini's free tier caps embed_content at ~100 requests/minute, and each
@@ -118,7 +133,15 @@ class Settings:
 
     # -- Retrieval ----------------------------------------------------------------
     top_k: int = int(os.getenv("TOP_K", "5"))
-    score_threshold: float = float(os.getenv("SCORE_THRESHOLD", "0.0"))
+    # A threshold of 0.0 filters nothing, which means the app would always
+    # show exactly top_k "sources" even when none of them are actually
+    # relevant -- a fixed-size list of citations, some scoring ~0, is
+    # actively misleading in an insurance context. 0.3 is a deliberately
+    # moderate default: high enough to drop obviously irrelevant chunks,
+    # low enough not to hide a genuinely useful but imperfect match. Tune
+    # this against your own retrieved-score distribution once you have
+    # real usage data; there is nothing universal about 0.3 itself.
+    score_threshold: float = float(os.getenv("SCORE_THRESHOLD", "0.3"))
     enable_hybrid_search: bool = _bool_env("ENABLE_HYBRID_SEARCH", True)
     enable_reranking: bool = _bool_env("ENABLE_RERANKING", True)
     reranker_model: str = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")

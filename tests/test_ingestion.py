@@ -11,9 +11,9 @@ from ingestion.pdf_loader import infer_document_type, load_pdfs
 
 
 def test_infer_document_type_from_filename():
-    assert infer_document_type("2026_Evidence_of_Coverage.pdf") == "Evidence of Coverage"
+    assert infer_document_type("Evidence_of_Coverage.pdf") == "Evidence of Coverage"
     assert infer_document_type("Summary_of_Benefits.pdf") == "Summary of Benefits"
-    assert infer_document_type("Medicare_Managed_Care_Manual.pdf") == "Medicare Managed Care Manual"
+    assert infer_document_type("Policy_Manual.pdf") == "Policy Manual"
     assert infer_document_type("some_random_file.pdf") == "General Policy Document"
 
 

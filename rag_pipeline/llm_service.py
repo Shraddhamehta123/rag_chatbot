@@ -21,9 +21,21 @@
 #   laptop against a real workspace) still works, using DATABRICKS_HOST +
 #   DATABRICKS_TOKEN as an explicit fallback credential.
 #
+# PACING CHAT CALLS AGAINST GEMINI'S STRICT FREE-TIER QUOTA
+#   Live testing showed Gemini's free tier caps CHAT generation at just 5
+#   requests/minute -- far stricter than the ~100/minute embedding quota,
+#   and easy to exhaust because both the query-rewrite call
+#   (query_rewriter.py) and the main answer-generation call
+#   (rag_pipeline.py) draw from this SAME quota. `acquire_chat_slot()` is
+#   the one place both call sites pace themselves through, sharing a single
+#   rate limiter so the app sees the true combined request rate rather than
+#   each call site tracking (and under-counting) its own.
+#
 # INPUT / OUTPUT
 #   get_chat_model() -> a LangChain BaseChatModel (ChatGoogleGenerativeAI or
 #   ChatDatabricks), built once per process and reused.
+#   acquire_chat_slot() -> blocks (sleeping if needed) until it's safe to
+#   make one more chat call without exceeding the active provider's quota.
 # ==============================================================================
 
 from typing import Optional
@@ -34,6 +46,7 @@ from utils.logging_utils import get_logger
 logger = get_logger(__name__)
 
 _llm_instance = None
+_chat_rate_limiter = None
 
 
 def get_chat_model():
@@ -75,3 +88,28 @@ def get_chat_model():
         raise ValueError(f"Unknown LLM_PROVIDER: '{settings.llm_provider}'")
 
     return _llm_instance
+
+
+def acquire_chat_slot() -> None:
+    """
+    Block until it's safe to make one more chat call without exceeding the
+    active provider's known rate limit. Call this immediately before every
+    `llm.invoke(...)` that reaches the chat model -- both the query
+    rewriter's call and the main answer-generation call.
+
+    Databricks Foundation Model APIs don't have a comparably strict,
+    universally-documented free-tier cap the way Gemini's free tier does,
+    so this is a no-op for that provider; add pacing here if your workspace
+    endpoint has a known throughput limit worth respecting.
+    """
+    global _chat_rate_limiter
+    if settings.llm_provider != "gemini":
+        return
+
+    if _chat_rate_limiter is None:
+        from utils.rate_limiter import SlidingWindowRateLimiter
+
+        _chat_rate_limiter = SlidingWindowRateLimiter(
+            settings.gemini_chat_requests_per_minute, name="Gemini chat requests"
+        )
+    _chat_rate_limiter.acquire(1)

@@ -1,4 +1,4 @@
-# Aetna Insurance Assistant — Local RAG Chatbot
+# Healthcare Insurance Assistant — Local RAG Chatbot
 
 A Retrieval-Augmented Generation (RAG) chatbot that answers member, provider,
 and policy questions using your official insurance plan documents (Evidence
@@ -108,7 +108,31 @@ EMBEDDING_PROVIDER=gemini    # hosted, uses your GEMINI_API_KEY, no model downlo
 old vectors from one provider are not comparable to query vectors from the
 other.
 
-## 5. Fully keyless mode: replacing Gemini with Databricks-hosted models
+## 5. Choosing which local embedding model to use
+
+`LOCAL_EMBEDDING_MODEL` defaults to `all-MiniLM-L6-v2` — the smallest and
+fastest free CPU embedding model, chosen for "run locally as easily as
+possible." It is not the most accurate option available. Rather than trust
+a public leaderboard (which measures general web/Wikipedia text, not
+insurance-specific language), this project includes its own small
+MTEB-style evaluation tool that measures retrieval quality against your
+**actual** ingested documents:
+
+```bash
+python -m scripts.evaluate_embeddings
+```
+
+This downloads a handful of candidate models (see `CANDIDATE_MODELS` at the
+top of `scripts/evaluate_embeddings.py` — edit that list to try others),
+embeds your real chunks and a set of hand-labeled real questions
+(`EVAL_QUESTIONS` in the same file), and reports the standard MTEB
+retrieval metrics (Recall@1/3/5, MRR) per model, ending with a
+recommendation and the exact `.env` line to apply it. Needs
+`huggingface.co` reachable (won't run in the network-restricted sandbox
+this project was partly built in — see section 7). After switching models,
+re-ingest as described above.
+
+## 6. Fully keyless mode: replacing Gemini with Databricks-hosted models
 
 Every LLM API normally requires your app to hold a secret credential. This
 project supports one deployment mode that genuinely doesn't: running inside
@@ -141,7 +165,7 @@ and with the MLflow version this project's local file-store tracking depends
 on. If you go fully keyless (drop Gemini entirely), you can safely upgrade
 to `databricks-langchain` and remove the Gemini-specific pins.
 
-## 6. A note on this project's own development/test sandbox
+## 7. A note on this project's own development/test sandbox
 
 This app was built and smoke-tested inside a network-restricted cloud
 sandbox. Two sandbox-specific constraints are worth knowing about if you hit
@@ -170,7 +194,7 @@ laptop/server with open internet access):
   hundred chunks may take several minutes on the free tier. This does not
   apply to the `local` provider, which has no API rate limit.
 
-## 7. Testing
+## 8. Testing
 
 ```bash
 pytest
@@ -182,7 +206,7 @@ store (Chroma, SQLite, MLflow) at a fresh temp directory per test, and the
 one test that reaches "the LLM" mocks `ChatGoogleGenerativeAI.invoke`
 directly — no real API key or network call is exercised by the test suite.
 
-## 8. Enhancements already built in
+## 9. Enhancements already built in
 
 - **Conversational memory** (`rag_pipeline/memory.py`) — capped chat history for natural follow-ups.
 - **Hybrid search** (`rag_pipeline/retrieval_service.py`) — vector + BM25 keyword blend, toggle via `ENABLE_HYBRID_SEARCH`.
@@ -193,14 +217,14 @@ directly — no real API key or network call is exercised by the test suite.
 - **Source citations + confidence** — every answer shows an expandable source panel and a retrieval-based confidence score.
 - **Follow-up handling** — covered jointly by memory + query rewriting above.
 
-## 9. Path to a real Databricks/production deployment
+## 10. Path to a real Databricks/production deployment
 
 Nothing in this codebase needs to change structurally to move to Databricks
 — only the modules explicitly called out in section 2's table get swapped.
-The LLM and embedding swap (item 0 below) is already done — see section 5.
+The LLM and embedding swap (item 0 below) is already done — see section 6.
 
 0. Chat + embeddings → set `LLM_PROVIDER=databricks` and
-   `EMBEDDING_PROVIDER=databricks` (section 5). Already implemented and
+   `EMBEDDING_PROVIDER=databricks` (section 6). Already implemented and
    config-driven; no code change needed for this part.
 1. `vector_store/chroma_manager.py` → a thin wrapper around a Databricks
    Vector Search endpoint + index (`databricks-vectorsearch` SDK), synced
@@ -217,7 +241,7 @@ The LLM and embedding swap (item 0 below) is already done — see section 5.
 5. Deploy `frontend/app.py` as a Databricks App (or any standard Streamlit
    host) instead of running it locally.
 
-## 10. Project structure
+## 11. Project structure
 
 ```
 rag_chatbot/

@@ -49,7 +49,7 @@ from utils.feedback_logger import log_feedback
 from vector_store import chroma_manager
 
 st.set_page_config(
-    page_title="Aetna Insurance Assistant",
+    page_title="Healthcare Insurance Assistant",
     page_icon="🩺",
     layout="centered",
 )
@@ -80,7 +80,7 @@ def ensure_documents_ingested() -> dict:
 def render_sidebar() -> bool:
     """Render the sidebar (model info, retrieved doc count, debug toggle)."""
     with st.sidebar:
-        st.header("Aetna Insurance Assistant")
+        st.header("Healthcare Insurance Assistant")
         st.caption("Ask about your coverage, benefits, and plan documents.")
 
         st.subheader("Model Info")
@@ -132,7 +132,7 @@ def render_sources(sources: list, debug_mode: bool) -> None:
 def main() -> None:
     debug_mode = render_sidebar()
 
-    st.title("🩺 Aetna Insurance Assistant")
+    st.title("🩺 Healthcare Insurance Assistant")
     st.caption(
         "I answer questions using your official Evidence of Coverage, Summary of "
         "Benefits, and plan documents. I only answer from those documents and "
