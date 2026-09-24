@@ -18,6 +18,11 @@ mlruns/
 eval_results/*
 !eval_results/latest.json
 
+# Archive/snapshot files -- never commit a zip of the project into the
+# project; source control already IS the archive, and a checked-in copy
+# only goes stale the moment either one changes without the other.
+*.zip
+
 # OS / editor cruft
 .DS_Store
 .vscode/
