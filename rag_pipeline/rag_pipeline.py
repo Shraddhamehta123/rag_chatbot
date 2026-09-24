@@ -10,12 +10,14 @@
 #   Chunks -> Ground LLM Response Using Retrieved Context -> Return Answer
 #   with Citations":
 #
-#     retrieve(question)        Step: vector (+hybrid+rerank) search
+#     retrieve(question)        Step: vector (+hybrid+multi-query+rerank) search
 #     build_context(chunks)     Step: format chunks into a citation-ready
 #                                block of text for the prompt
 #     generate_answer(...)      Step: call Gemini with the grounded prompt
 #     answer_question(question) The single public entry point that runs the
-#                                whole pipeline end-to-end for one turn
+#                                whole pipeline end-to-end for one turn,
+#                                including the optional multi-hop follow-up
+#                                round between build_context and generate_answer
 #
 # WHY SPLIT INTO FOUR METHODS INSTEAD OF ONE BIG FUNCTION
 #   Each stage is independently testable (see tests/test_rag_pipeline.py,
@@ -47,10 +49,12 @@ from config.settings import settings
 from rag_pipeline import guardrails, retrieval_service
 from rag_pipeline.llm_service import acquire_chat_slot, get_chat_model
 from rag_pipeline.memory import ConversationMemory
+from rag_pipeline.multi_hop import plan_next_hop
+from rag_pipeline.multi_query import generate_query_variants, reciprocal_rank_fusion
 from rag_pipeline.prompt_templates import NOT_FOUND_MESSAGE, build_prompt
 from rag_pipeline.query_rewriter import rewrite_query
 from rag_pipeline.reranker import rerank
-from rag_pipeline.retrieval_service import RetrievedChunk
+from rag_pipeline.retrieval_service import RetrievedChunk, chunk_identity
 from utils.logging_utils import get_logger
 from utils.mlflow_tracking import trace_query
 
@@ -112,9 +116,12 @@ class RAGPipeline:
         """
         Retrieve the top-K most relevant chunks for `question`.
 
-        Runs vector (+ optional hybrid) search via retrieval_service, then
-        optional cross-encoder reranking, returning the final ranked list
-        the rest of the pipeline should treat as "the evidence".
+        Runs vector (+ optional hybrid) search via retrieval_service --
+        optionally against several LLM-generated paraphrasings of `question`
+        (see rag_pipeline/multi_query.py), fused via reciprocal rank fusion
+        when ENABLE_MULTI_QUERY is set -- then optional cross-encoder
+        reranking, returning the final ranked list the rest of the pipeline
+        should treat as "the evidence".
 
         The score threshold is enforced TWICE: once inside
         retrieval_service.retrieve() on the vector/hybrid score, and again
@@ -128,7 +135,11 @@ class RAGPipeline:
         source count that pads out with weak matches is exactly what a
         real relevance threshold is supposed to prevent.
         """
-        chunks = retrieval_service.retrieve(question)
+        if settings.enable_multi_query:
+            variants = generate_query_variants(question, self._llm, settings.multi_query_variants)
+            chunks = reciprocal_rank_fusion([retrieval_service.retrieve(variant) for variant in variants])
+        else:
+            chunks = retrieval_service.retrieve(question)
         if not chunks:
             return []
 
@@ -161,6 +172,40 @@ class RAGPipeline:
             ]
 
         return chunks[: settings.top_k]
+
+    def _run_multi_hop(
+        self, question: str, chunks: List[RetrievedChunk], context: str
+    ) -> "tuple[List[RetrievedChunk], str]":
+        """
+        Let the model ask itself up to (settings.max_hops - 1) follow-up
+        search queries when the current context doesn't fully answer
+        `question` (see rag_pipeline/multi_hop.py), merging each hop's
+        chunks into the running set and rebuilding the context each time.
+
+        Bounded by settings.max_hops -- a single sufficiency-check failure
+        or an already-sufficient context stops the loop immediately, so the
+        common case costs nothing beyond the one extra check.
+        """
+        hops_done = 1
+        seen_identities = {chunk_identity(c) for c in chunks}
+
+        while hops_done < settings.max_hops:
+            follow_up_query = plan_next_hop(question, context, self._llm)
+            if not follow_up_query:
+                break
+
+            new_chunks = [c for c in self.retrieve(follow_up_query) if chunk_identity(c) not in seen_identities]
+            if not new_chunks:
+                # Nothing new came back -- another hop would just repeat
+                # this same check against unchanged context.
+                break
+
+            chunks = chunks + new_chunks
+            seen_identities.update(chunk_identity(c) for c in new_chunks)
+            context = self.build_context(chunks)
+            hops_done += 1
+
+        return chunks, context
 
     def build_context(self, chunks: List[RetrievedChunk]) -> str:
         """
@@ -283,6 +328,8 @@ class RAGPipeline:
                 is_grounded = True
             else:
                 context = self.build_context(chunks)
+                if settings.enable_multi_hop:
+                    chunks, context = self._run_multi_hop(standalone_question, chunks, context)
                 answer = self.generate_answer(context, standalone_question)
                 sources = [
                     {

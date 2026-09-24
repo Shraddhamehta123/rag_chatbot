@@ -146,6 +146,23 @@ class Settings:
     enable_reranking: bool = _bool_env("ENABLE_RERANKING", True)
     reranker_model: str = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
 
+    # -- Multi-query retrieval (rag_pipeline/multi_query.py) ------------------
+    # Off by default: unlike hybrid search and reranking (both local, free),
+    # this costs one extra Gemini CHAT call per question -- against the free
+    # tier's tight 5 requests/minute chat quota (shared with query rewriting
+    # and answer generation), that adds up fast. Turn on once you're past the
+    # free tier, or don't mind slower responses.
+    enable_multi_query: bool = _bool_env("ENABLE_MULTI_QUERY", False)
+    multi_query_variants: int = int(os.getenv("MULTI_QUERY_VARIANTS", "3"))
+
+    # -- Multi-hop retrieval (rag_pipeline/multi_hop.py) ----------------------
+    # Also off by default, and for the same reason: each extra hop is one
+    # more chat call (the sufficiency check) plus one more retrieval pass.
+    # max_hops bounds it (2 = one initial retrieval + at most one follow-up)
+    # so a model that's "never quite satisfied" can't loop indefinitely.
+    enable_multi_hop: bool = _bool_env("ENABLE_MULTI_HOP", False)
+    max_hops: int = int(os.getenv("MAX_HOPS", "2"))
+
     # -- Conversation memory -----------------------------------------------------
     max_history_turns: int = int(os.getenv("MAX_HISTORY_TURNS", "6"))
 

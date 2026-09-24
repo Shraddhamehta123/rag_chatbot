@@ -61,6 +61,18 @@ class RetrievedChunk:
     section_title: str = ""
 
 
+def chunk_identity(chunk: RetrievedChunk) -> tuple:
+    """
+    A stable de-duplication key for a retrieved chunk.
+
+    RetrievedChunk doesn't carry the vector store's own chunk_id, so
+    (document, page, text) stands in for it -- used by multi_query.py's
+    fusion and rag_pipeline.py's multi-hop merging to recognize the "same"
+    chunk surfaced by two different queries.
+    """
+    return (chunk.document_name, chunk.page_number, chunk.chunk_text)
+
+
 def _distance_to_similarity(distance: float) -> float:
     """Convert Chroma's cosine distance (0=identical, 2=opposite) to a 0-1 score."""
     similarity = 1.0 - (distance / 2.0)

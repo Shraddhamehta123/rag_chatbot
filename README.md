@@ -33,8 +33,10 @@ entirely on a single machine — no cloud infrastructure required to try it out.
 │        ▼                                                                 │
 │  rag_pipeline/                                                          │
 │    retrieval_service.py    top-K + score threshold + hybrid (BM25)      │
+│    multi_query.py           optional: paraphrase + fuse (RRF)           │
 │    reranker.py              optional cross-encoder re-scoring           │
 │    query_rewriter.py        follow-up question -> standalone question   │
+│    multi_hop.py             optional: follow-up retrieval round         │
 │    memory.py                 capped conversation history                │
 │    guardrails.py            input/output safety checks                  │
 │    prompt_templates.py      grounded system prompt + citation format    │
@@ -237,6 +239,8 @@ directly — no real API key or network call is exercised by the test suite.
 - **Guardrails** (`rag_pipeline/guardrails.py`) — prompt-injection denylist + lexical grounding check on every answer.
 - **Source citations + confidence** — every answer shows an expandable source panel and a retrieval-based confidence score.
 - **Follow-up handling** — covered jointly by memory + query rewriting above.
+- **Multi-query retrieval** (`rag_pipeline/multi_query.py`) — searches with several LLM-generated paraphrasings of the question and fuses the results via reciprocal rank fusion, so retrieval isn't only as good as the user's exact wording. Off by default (`ENABLE_MULTI_QUERY`) — costs one extra Gemini chat call per question.
+- **Multi-hop retrieval** (`rag_pipeline/multi_hop.py`) — after the first retrieval pass, lets the model ask itself a follow-up search query when a compound question needs a second, different piece of information, then merges both rounds' chunks before answering. Off by default (`ENABLE_MULTI_HOP`), bounded by `MAX_HOPS`.
 - **Retrieval evaluation** (`utils/retrieval_metrics.py`, `scripts/evaluate_embeddings.py`, `scripts/evaluate_retrieval.py`) — Recall@K, Precision@K, NDCG@K, and MRR against hand-labeled ground truth, for both a candidate embedding model in isolation and the full deployed pipeline — see section 5.
 
 ## 10. Path to a real Databricks/production deployment
@@ -272,7 +276,7 @@ rag_chatbot/
 ├── chunking/                    # chunker.py (dispatch), structure_chunker.py (chapter/section-aware)
 ├── embeddings/                 # base.py, local_embeddings.py, gemini_embeddings.py, embedding_service.py
 ├── vector_store/                # chroma_manager.py, metadata_table.py
-├── rag_pipeline/                # retrieval_service, reranker, query_rewriter, memory, guardrails, prompt_templates, rag_pipeline
+├── rag_pipeline/                # retrieval_service, multi_query, reranker, query_rewriter, multi_hop, memory, guardrails, prompt_templates, rag_pipeline
 ├── frontend/app.py              # Streamlit chat-only UI
 ├── config/settings.py
 ├── utils/                       # logging_utils, mlflow_tracking, feedback_logger
