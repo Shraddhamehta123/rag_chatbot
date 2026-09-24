@@ -35,14 +35,34 @@
 #   swapping to a different LangChain-supported model later would not
 #   require touching prompt_templates.py or query_rewriter.py at all.
 #
+# STREAMING
+#   generate_answer()/answer_question() accept an optional `on_token`
+#   callback. When given, the final answer streams token-by-token (via the
+#   LangChain chat model's `.stream()` instead of `.invoke()`) and `on_token`
+#   is called with the accumulated text so far on each new piece -- see
+#   generate_answer()'s docstring. Retrieval, reranking, grounding, memory,
+#   and MLflow logging are unaffected either way; only how the final answer
+#   text is delivered changes.
+#
+# CONCURRENCY
+#   Multi-query retrieval's per-variant searches (rag_pipeline/multi_query.py)
+#   run concurrently via a thread pool in retrieve_with_stages() -- they're
+#   independent embedding + Chroma calls with no shared state, so running
+#   them one after another was pure wasted wall-clock time. This is threads,
+#   not asyncio: the underlying I/O (the embedding provider, ChromaDB) is
+#   ordinary blocking Python, and threads already release the GIL during
+#   network I/O, so a full async rewrite of the retrieval stack wouldn't buy
+#   more concurrency here, just more code.
+#
 # INPUT / OUTPUT
 #   answer_question(question) -> {"answer": str, "sources": [...],
 #   "confidence": float} -- everything the Streamlit UI needs to render one
 #   chat turn.
 # ==============================================================================
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -156,6 +176,17 @@ class RAGPipeline:
         with -- truncating first would hide exactly the "reranking promoted
         a candidate from rank 8 to rank 2" cases this method exists to show).
 
+        The per-variant searches (when multi-query is on) are independent of
+        each other -- each is its own embedding call + Chroma query with no
+        shared state -- so they run concurrently via a thread pool instead of
+        one after another. This is threads, not asyncio: the underlying work
+        (the embedding provider, ChromaDB's client) is ordinary blocking I/O,
+        not async-native, and threads release the GIL during that I/O just
+        like async would, for a fraction of the rewrite. utils/rate_limiter.py
+        (shared by the embedding provider) is already lock-protected, so
+        concurrent callers pace correctly against the same quota rather than
+        each under-counting the others' requests.
+
         The score threshold is enforced TWICE: once inside
         retrieval_service.retrieve() on the vector/hybrid score, and again
         here on the final score actually shown to the user. Reranking can
@@ -170,9 +201,9 @@ class RAGPipeline:
         """
         if settings.enable_multi_query:
             variants = generate_query_variants(question, self._llm, settings.multi_query_variants)
-            before_reranking = reciprocal_rank_fusion(
-                [retrieval_service.retrieve(variant) for variant in variants]
-            )
+            with ThreadPoolExecutor(max_workers=len(variants)) as executor:
+                variant_results = list(executor.map(retrieval_service.retrieve, variants))
+            before_reranking = reciprocal_rank_fusion(variant_results)
         else:
             before_reranking = retrieval_service.retrieve(question)
 
@@ -291,10 +322,48 @@ class RAGPipeline:
         response = self._llm.invoke(messages)
         return response.content.strip()
 
-    def generate_answer(self, context: str, question: str) -> str:
+    @retry(
+        # Same policy as _invoke_llm() above -- this decorator wraps ONE
+        # attempt at streaming the full response. If a failure happens after
+        # some chunks were already sent to `on_token`, the retried attempt
+        # starts its own accumulation from empty and calls `on_token` with
+        # that fresh (shorter) text -- the caller's UI naturally re-renders
+        # from scratch rather than appending a stale partial answer to a new
+        # one, since each call passes the full accumulated-so-far text, not
+        # a delta.
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=3, max=20),
+        retry=lambda retry_state: (
+            retry_state.outcome.failed
+            and not _is_permanent_auth_error(retry_state.outcome.exception())
+        ),
+        reraise=True,
+    )
+    def _stream_llm(self, messages: List, on_token: Callable[[str], None]) -> str:
+        acquire_chat_slot()
+        accumulated = ""
+        for chunk in self._llm.stream(messages):
+            piece = chunk.content or ""
+            if piece:
+                accumulated += piece
+                on_token(accumulated)
+        return accumulated.strip()
+
+    def generate_answer(
+        self, context: str, question: str, on_token: Optional[Callable[[str], None]] = None
+    ) -> str:
         """
         Call the chat model with the grounded prompt and return its raw text
         answer.
+
+        If `on_token` is given, the answer streams: `on_token` is called
+        with the accumulated text so far every time a new piece arrives
+        (e.g. for a Streamlit placeholder to re-render), and this method
+        still returns the final complete string once streaming finishes --
+        everything downstream (grounding check, memory, MLflow logging)
+        works from that same final string exactly as it does today, so
+        streaming is purely a display-layer change, not a different answer.
+        Without `on_token`, this makes one plain, non-streaming call.
 
         If the LLM call still fails (e.g. a sustained rate limit, an outage,
         or an invalid/revoked API key), this returns a clear, user-facing
@@ -306,6 +375,8 @@ class RAGPipeline:
         """
         messages = build_prompt(context, question, self.memory.get_history())
         try:
+            if on_token is not None:
+                return self._stream_llm(messages, on_token)
             return self._invoke_llm(messages)
         except Exception as exc:
             logger.exception("Chat model call failed")
@@ -313,11 +384,19 @@ class RAGPipeline:
                 return AUTH_ERROR_MESSAGE
             return SERVICE_UNAVAILABLE_MESSAGE
 
-    def answer_question(self, question: str) -> Dict[str, Any]:
+    def answer_question(
+        self, question: str, on_token: Optional[Callable[[str], None]] = None
+    ) -> Dict[str, Any]:
         """
         Run one full chat turn end-to-end: input guardrail -> query rewrite
         -> retrieve -> rerank -> build context -> generate -> grounding
         check -> update memory.
+
+        `on_token`, if given, is forwarded to generate_answer() so the final
+        answer streams instead of arriving all at once -- see that method's
+        docstring. It has no effect on the guardrail-rejection or "not
+        found" fallback paths, which return instantly with no LLM call
+        either way.
 
         Returns:
             {
@@ -368,7 +447,7 @@ class RAGPipeline:
                 context = self.build_context(chunks)
                 if settings.enable_multi_hop:
                     chunks, context = self._run_multi_hop(standalone_question, chunks, context)
-                answer = self.generate_answer(context, standalone_question)
+                answer = self.generate_answer(context, standalone_question, on_token=on_token)
                 sources = [
                     {
                         "document_name": c.document_name,

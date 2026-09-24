@@ -148,6 +148,82 @@ def test_generate_answer_gives_distinct_message_for_a_dead_api_key(pipeline, mon
     assert call_count["n"] == 1
 
 
+def test_generate_answer_streams_progressively_and_returns_the_final_text(pipeline, monkeypatch):
+    # .stream() yields chunks with a .content piece each, same shape as a
+    # real LangChain streaming response (an AIMessageChunk-like object).
+    def fake_stream(self, messages, **kwargs):
+        return iter(
+            [
+                SimpleNamespace(content="Your "),
+                SimpleNamespace(content="deductible "),
+                SimpleNamespace(content="is $500."),
+            ]
+        )
+
+    monkeypatch.setattr(type(pipeline._llm), "stream", fake_stream)
+
+    seen_calls = []
+    answer = pipeline.generate_answer("some context", "What is my deductible?", on_token=seen_calls.append)
+
+    # Each call gets the FULL accumulated text so far, not just the new
+    # piece -- a UI placeholder can just re-render from each call directly.
+    assert seen_calls == ["Your ", "Your deductible ", "Your deductible is $500."]
+    assert answer == "Your deductible is $500."
+
+
+def test_generate_answer_without_on_token_does_not_stream(pipeline, monkeypatch):
+    def should_not_be_called(self, messages, **kwargs):
+        raise AssertionError(".stream() should not be called when on_token is not given")
+
+    monkeypatch.setattr(type(pipeline._llm), "stream", should_not_be_called)
+    monkeypatch.setattr(
+        type(pipeline._llm), "invoke", lambda self, messages, **kwargs: SimpleNamespace(content="Plain answer.")
+    )
+
+    answer = pipeline.generate_answer("some context", "What is my deductible?")
+
+    assert answer == "Plain answer."
+
+
+def test_generate_answer_streaming_degrades_gracefully_when_llm_keeps_failing(pipeline, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+
+    def always_fails(self, messages, **kwargs):
+        raise RuntimeError("simulated 429 rate limit")
+
+    monkeypatch.setattr(type(pipeline._llm), "stream", always_fails)
+
+    answer = pipeline.generate_answer("some context", "What is my deductible?", on_token=lambda text: None)
+
+    assert answer == SERVICE_UNAVAILABLE_MESSAGE
+
+
+def test_answer_question_forwards_on_token_through_to_generation(pipeline, monkeypatch):
+    chunk = Chunk(
+        chunk_id="chunk-1",
+        chunk_text="The annual deductible for this plan is $250 per member.",
+        file_name="Summary_of_Benefits.pdf",
+        page_number=3,
+        document_type="Summary of Benefits",
+    )
+    embeddings = generate_embeddings([chunk.chunk_text])
+    chroma_manager.upsert_chunks([chunk], embeddings)
+
+    def fake_stream(self, messages, **kwargs):
+        return iter([SimpleNamespace(content="Your deductible is $250.")])
+
+    monkeypatch.setattr(type(pipeline._llm), "stream", fake_stream)
+
+    seen_calls = []
+    result = pipeline.answer_question("What is my annual deductible?", on_token=seen_calls.append)
+
+    assert seen_calls == ["Your deductible is $250."]
+    assert result["answer"] == "Your deductible is $250."
+    assert len(result["sources"]) == 1
+
+
 def test_answer_question_degrades_gracefully_when_retrieval_fails(pipeline, monkeypatch):
     # Simulate a dead embedding provider (e.g. same invalid key used for
     # embeddings): retrieve() raising should not crash answer_question()

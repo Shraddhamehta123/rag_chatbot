@@ -27,6 +27,14 @@
 #   the displayed message list (separate from RAGPipeline's own internal
 #   ConversationMemory, which is used for LLM context/query rewriting).
 #
+# STREAMING
+#   A new answer is displayed token-by-token instead of appearing all at
+#   once: pipeline.answer_question() takes an on_token callback (see
+#   rag_pipeline/rag_pipeline.py) that this file uses to re-render a
+#   st.empty() placeholder with the accumulated text on every new piece.
+#   Only the LATEST answer streams -- past messages replayed from
+#   st.session_state on a rerun render instantly, exactly as before.
+#
 # INPUT / OUTPUT
 #   Input:  user's typed question via st.chat_input.
 #   Output: rendered chat bubbles, expandable source citations, a
@@ -127,7 +135,7 @@ def render_sources(sources: list) -> None:
             st.progress(min(max(source["score"], 0.0), 1.0), text=f"Relevance score: {source['score']:.2f}")
 
 
-def render_assistant_message(index: int, message: dict) -> None:
+def render_assistant_message(index: int, message: dict, skip_content: bool = False) -> None:
     """
     Render one assistant turn: answer text, sources, confidence, and the
     👍/👎 feedback buttons -- shared by both the chat-history replay loop and
@@ -140,8 +148,13 @@ def render_assistant_message(index: int, message: dict) -> None:
     -- used as the button keys' suffix so they stay unique and consistent
     across reruns (the identical index the history loop will use for this
     same message on the next rerun).
+
+    `skip_content=True` for a just-streamed answer: its text was already
+    rendered incrementally into a placeholder as it arrived (see main()), so
+    rendering it again here would show it twice.
     """
-    st.markdown(message["content"])
+    if not skip_content:
+        st.markdown(message["content"])
     render_sources(message.get("sources", []))
     if message.get("confidence") is not None:
         st.caption(f"Confidence: {message['confidence']:.0%}")
@@ -207,8 +220,20 @@ def main() -> None:
             st.markdown(question)
 
         with st.chat_message("assistant"):
-            with st.spinner("Searching your plan documents..."):
-                result = pipeline.answer_question(question)
+            # A placeholder that first shows a "searching" notice, then gets
+            # overwritten with the answer as it streams in -- generate_answer()
+            # only calls on_token() once retrieval/reranking/multi-hop are
+            # already done and the LLM call has actually started, so this
+            # notice naturally covers that earlier work with no separate
+            # spinner needed.
+            placeholder = st.empty()
+            placeholder.markdown("_Searching your plan documents..._")
+
+            def on_token(accumulated_text: str) -> None:
+                placeholder.markdown(accumulated_text + "▌")
+
+            result = pipeline.answer_question(question, on_token=on_token)
+            placeholder.markdown(result["answer"])
 
             # Append BEFORE rendering, so the message's index in
             # st.session_state.messages is already final -- the feedback
@@ -225,7 +250,7 @@ def main() -> None:
                 }
             )
             new_index = len(st.session_state.messages) - 1
-            render_assistant_message(new_index, st.session_state.messages[new_index])
+            render_assistant_message(new_index, st.session_state.messages[new_index], skip_content=True)
 
 
 if __name__ == "__main__":
