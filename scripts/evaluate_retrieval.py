@@ -50,6 +50,7 @@
 #   python -m scripts.evaluate_retrieval
 # ==============================================================================
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -67,7 +68,35 @@ from utils.retrieval_metrics import ndcg_at_k, precision_at_k, recall_at_k, reci
 logger = get_logger(__name__)
 
 RESULTS_DIR = Path("eval_results")
+LATEST_RESULTS_PATH = RESULTS_DIR / "latest.json"  # the one snapshot meant to be committed -- see .gitignore
 K_VALUES = (1, 3, 5)
+
+_ACTIVE_EMBEDDING_MODEL = {
+    "local": lambda: settings.local_embedding_model,
+    "gemini": lambda: settings.gemini_embedding_model,
+    "databricks": lambda: settings.databricks_embedding_endpoint,
+}
+
+
+def _corpus_fingerprint(pdf_dir: str) -> str:
+    """
+    A single hash summarizing every source PDF's current content.
+
+    Recorded alongside the metrics so a committed eval_results/latest.json
+    makes it visible, on review, exactly which document set + model
+    configuration produced these numbers -- if this fingerprint differs
+    between two commits of latest.json, the documents changed; if it's the
+    same but the reranker/embedding model fields differ, that's what changed
+    instead.
+    """
+    folder = Path(pdf_dir)
+    if not folder.exists():
+        return ""
+    combined = hashlib.sha256()
+    for pdf_path in sorted(folder.glob("*.pdf")):
+        combined.update(pdf_path.name.encode("utf-8"))
+        combined.update(pdf_path.read_bytes())
+    return combined.hexdigest()[:16]
 
 
 @dataclass
@@ -218,29 +247,39 @@ def main() -> None:
 
     RESULTS_DIR.mkdir(exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    output_path = RESULTS_DIR / f"retrieval_eval_{timestamp}.json"
-    output_path.write_text(
-        json.dumps(
-            {
-                "timestamp": timestamp,
-                "settings": {
-                    "embedding_provider": settings.embedding_provider,
-                    "enable_hybrid_search": settings.enable_hybrid_search,
-                    "enable_reranking": settings.enable_reranking,
-                    "top_k": settings.top_k,
-                    "score_threshold": settings.score_threshold,
-                },
-                "aggregate": {
-                    "before_reranking": aggregate_before,
-                    "after_reranking": aggregate_after,
-                    "reranking_impact": impact,
-                },
-                "per_query": [asdict(r) for r in results],
-            },
-            indent=2,
-        )
-    )
-    print(f"\nFull per-query before/after results saved to {output_path}")
+    payload = {
+        "timestamp": timestamp,
+        "settings": {
+            "embedding_provider": settings.embedding_provider,
+            "embedding_model": _ACTIVE_EMBEDDING_MODEL[settings.embedding_provider](),
+            "enable_hybrid_search": settings.enable_hybrid_search,
+            "enable_reranking": settings.enable_reranking,
+            "reranker_model": settings.reranker_model if settings.enable_reranking else None,
+            "top_k": settings.top_k,
+            "score_threshold": settings.score_threshold,
+        },
+        "corpus_fingerprint": _corpus_fingerprint(settings.pdf_data_dir),
+        "aggregate": {
+            "before_reranking": aggregate_before,
+            "after_reranking": aggregate_after,
+            "reranking_impact": impact,
+        },
+        "per_query": [asdict(r) for r in results],
+    }
+    serialized = json.dumps(payload, indent=2)
+
+    # Timestamped copy: local, disposable run history (gitignored).
+    (RESULTS_DIR / f"retrieval_eval_{timestamp}.json").write_text(serialized)
+
+    # latest.json: the one snapshot meant to be committed and reviewed in
+    # git -- see .gitignore. It's just overwritten on every run; nothing
+    # forces it to be re-run automatically, so it's only ever as fresh as
+    # the last time someone deliberately ran this script and committed the
+    # change (e.g. after editing data/pdfs/ or RERANKER_MODEL/EMBEDDING_PROVIDER).
+    LATEST_RESULTS_PATH.write_text(serialized)
+
+    print(f"\nFull per-query before/after results saved to {RESULTS_DIR / f'retrieval_eval_{timestamp}.json'}")
+    print(f"Committed snapshot updated at {LATEST_RESULTS_PATH} -- `git add` and commit it to record this run.")
 
 
 if __name__ == "__main__":

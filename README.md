@@ -165,6 +165,23 @@ name. It also prints which questions missed the correct page within
 formulas live in `utils/retrieval_metrics.py`, shared by
 both scripts so their numbers are directly comparable.
 
+**Reviewing metrics in git, without CI:** every run also overwrites
+`eval_results/latest.json` — the one snapshot in that folder that ISN'T
+gitignored, specifically so it can be committed and diffed in a PR like any
+other file. It also records a `corpus_fingerprint` (a hash of every file in
+`data/pdfs/`) plus the active `embedding_model` and `reranker_model`, so
+anyone reviewing a commit of this file can tell at a glance whether a change
+in the numbers was caused by different documents or a different model. This
+is deliberately a manual step, not automatic: re-run
+`python -m scripts.evaluate_retrieval` and commit `eval_results/latest.json`
+whenever you change `data/pdfs/`, `RERANKER_MODEL`, or the embedding
+provider/model, the same way you'd update any other generated file that
+depends on project state. Wiring an actual CI trigger for this (so it
+happens on every relevant PR rather than being something you remember to
+do) is a reasonable next step, but is a separate, bigger change (needs
+`GEMINI_API_KEY` as a repo secret and network access in CI) that hasn't been
+built here.
+
 ## 6. Fully keyless mode: replacing Gemini with Databricks-hosted models
 
 Every LLM API normally requires your app to hold a secret credential. This

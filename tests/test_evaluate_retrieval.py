@@ -16,6 +16,7 @@ from scripts.evaluate_retrieval import (
     QueryResult,
     StageMetrics,
     _aggregate_stage,
+    _corpus_fingerprint,
     _find_rank,
     _reranking_impact_summary,
     _stage_metrics,
@@ -88,3 +89,27 @@ def test_aggregate_stage_averages_metrics_across_queries():
 
     assert aggregate["recall_at_k"][1] == pytest.approx(0.5)
     assert aggregate["mrr"] == pytest.approx(0.5)
+
+
+def test_corpus_fingerprint_changes_when_a_pdf_changes(tmp_path):
+    pdf_dir = tmp_path / "pdfs"
+    pdf_dir.mkdir()
+    (pdf_dir / "a.pdf").write_bytes(b"version one")
+    first = _corpus_fingerprint(str(pdf_dir))
+
+    (pdf_dir / "a.pdf").write_bytes(b"version two")
+    second = _corpus_fingerprint(str(pdf_dir))
+
+    assert first != second
+
+
+def test_corpus_fingerprint_is_stable_when_nothing_changed(tmp_path):
+    pdf_dir = tmp_path / "pdfs"
+    pdf_dir.mkdir()
+    (pdf_dir / "a.pdf").write_bytes(b"content")
+
+    assert _corpus_fingerprint(str(pdf_dir)) == _corpus_fingerprint(str(pdf_dir))
+
+
+def test_corpus_fingerprint_is_empty_for_a_missing_directory(tmp_path):
+    assert _corpus_fingerprint(str(tmp_path / "does_not_exist")) == ""

@@ -11,7 +11,12 @@ venv/
 # Local data stores generated at runtime (rebuildable from data/pdfs/ via scripts/ingest.py)
 vectorstore_db/
 mlruns/
-eval_results/
+
+# Per-run retrieval evaluation history -- scratch, not meant for review.
+# eval_results/latest.json is the exception (see below): it's the one
+# snapshot meant to be committed and reviewed, so it's tracked deliberately.
+eval_results/*
+!eval_results/latest.json
 
 # OS / editor cruft
 .DS_Store
