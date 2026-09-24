@@ -82,6 +82,10 @@ cd rag_chatbot
 python3 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate
 pip install -r requirements.txt
+# ^ installs a CPU-only build of torch (~3 GB total install) via the
+#   --extra-index-url pin at the top of requirements.txt -- without it, pip
+#   would pull a GPU/CUDA build (~7 GB) that this project never uses, since
+#   local embeddings and reranking only ever run on CPU here.
 
 cp .env.example .env
 # Edit .env and set GEMINI_API_KEY (get one free at https://aistudio.google.com/apikey)
