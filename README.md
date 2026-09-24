@@ -147,12 +147,22 @@ python -m scripts.evaluate_retrieval   # needs the vector store already populate
 ```
 
 This uses whichever provider/settings are currently in `.env`, reports the
-same four metrics, and — unlike the embedding-model comparison above —
-saves every individual question's result (not just the average) to
-`eval_results/retrieval_eval_<timestamp>.json`, so a specific regression can
-be traced back to the question that caused it. It also prints which
-questions missed the correct page within `TOP_K`, for quick debugging. The
-underlying metric formulas live in `utils/retrieval_metrics.py`, shared by
+same four metrics **twice — once BEFORE reranking (vector/hybrid search
+only) and once AFTER** — plus a one-line summary of how many questions
+reranking actually improved, left unchanged, or made worse. That's the only
+way to see reranking's real effect: `RAGPipeline.retrieve()` on its own only
+ever returns the final, post-reranking list, so without this the
+pre-reranking ranking is invisible. If `ENABLE_RERANKING=false`, the two
+stages are identical (nothing to compare) and the impact summary is
+skipped.
+
+Unlike the embedding-model comparison above, this also saves every
+individual question's before/after result (not just the average) to
+`eval_results/retrieval_eval_<timestamp>.json`, so a specific regression, or
+reranking actively hurting one particular question, can be traced back by
+name. It also prints which questions missed the correct page within
+`TOP_K` after reranking, for quick debugging. The underlying metric
+formulas live in `utils/retrieval_metrics.py`, shared by
 both scripts so their numbers are directly comparable.
 
 ## 6. Fully keyless mode: replacing Gemini with Databricks-hosted models

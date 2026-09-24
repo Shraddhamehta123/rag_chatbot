@@ -164,6 +164,86 @@ def test_answer_question_degrades_gracefully_when_retrieval_fails(pipeline, monk
     assert result["confidence"] == 0.0
 
 
+def test_retrieve_with_stages_shows_reranking_promoting_a_chunk(pipeline, monkeypatch):
+    # retrieve() alone only ever returns the FINAL (post-reranking) list --
+    # retrieve_with_stages() exists specifically so callers (e.g.
+    # scripts/evaluate_retrieval.py) can see what reranking actually did:
+    # here, the vector/hybrid stage ranks the truly relevant chunk second,
+    # but reranking correctly promotes it to first.
+    import rag_pipeline.rag_pipeline as rag_pipeline_module
+
+    monkeypatch.setattr(rag_pipeline_module.settings, "enable_reranking", True)
+    monkeypatch.setattr(rag_pipeline_module.settings, "score_threshold", 0.0)
+
+    relevant_chunk = Chunk(
+        chunk_id="relevant",
+        chunk_text="The annual deductible is $500.",
+        file_name="Summary_of_Benefits.pdf",
+        page_number=1,
+        document_type="Summary of Benefits",
+    )
+    other_chunk = Chunk(
+        chunk_id="other",
+        chunk_text="Two dental cleanings per year are covered.",
+        file_name="Summary_of_Benefits.pdf",
+        page_number=4,
+        document_type="Summary of Benefits",
+    )
+    embeddings = generate_embeddings([relevant_chunk.chunk_text, other_chunk.chunk_text])
+    chroma_manager.upsert_chunks([relevant_chunk, other_chunk], embeddings)
+
+    # Force a deterministic BEFORE ranking (vector/hybrid) with the relevant
+    # chunk second, and a deterministic AFTER ranking (reranker) with it first.
+    def fake_rerank(question, candidates):
+        for c in candidates:
+            c["rerank_score"] = 0.9 if c["chunk_text"] == relevant_chunk.chunk_text else 0.5
+        return sorted(candidates, key=lambda c: c["rerank_score"], reverse=True)
+
+    monkeypatch.setattr(rag_pipeline_module, "rerank", fake_rerank)
+    monkeypatch.setattr(
+        rag_pipeline_module.retrieval_service,
+        "retrieve",
+        lambda question, top_k=None, score_threshold=None: [
+            RetrievedChunk(
+                chunk_text=other_chunk.chunk_text, score=0.6, document_name="Summary_of_Benefits.pdf",
+                document_type="Summary of Benefits", page_number=4,
+            ),
+            RetrievedChunk(
+                chunk_text=relevant_chunk.chunk_text, score=0.55, document_name="Summary_of_Benefits.pdf",
+                document_type="Summary of Benefits", page_number=1,
+            ),
+        ],
+    )
+
+    stages = pipeline.retrieve_with_stages("What is my annual deductible?")
+
+    assert stages.before_reranking[0].chunk_text == other_chunk.chunk_text
+    assert stages.before_reranking[1].chunk_text == relevant_chunk.chunk_text
+    assert stages.after_reranking[0].chunk_text == relevant_chunk.chunk_text
+    # retrieve() itself must still return exactly the "after" stage.
+    assert pipeline.retrieve("What is my annual deductible?") == stages.after_reranking
+
+
+def test_retrieve_with_stages_before_equals_after_when_reranking_disabled(pipeline, monkeypatch):
+    import rag_pipeline.rag_pipeline as rag_pipeline_module
+
+    monkeypatch.setattr(rag_pipeline_module.settings, "enable_reranking", False)
+
+    chunk = Chunk(
+        chunk_id="only",
+        chunk_text="The annual deductible is $500.",
+        file_name="Summary_of_Benefits.pdf",
+        page_number=1,
+        document_type="Summary of Benefits",
+    )
+    embeddings = generate_embeddings([chunk.chunk_text])
+    chroma_manager.upsert_chunks([chunk], embeddings)
+
+    stages = pipeline.retrieve_with_stages("What is my annual deductible?")
+
+    assert [c.chunk_text for c in stages.before_reranking] == [c.chunk_text for c in stages.after_reranking]
+
+
 def test_retrieve_drops_chunks_that_score_low_after_reranking(pipeline, monkeypatch):
     # Regression test for a real bug: the first-stage vector/hybrid
     # threshold ran before reranking, but nothing re-checked the threshold

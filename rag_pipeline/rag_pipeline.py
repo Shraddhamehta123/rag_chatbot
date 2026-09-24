@@ -41,6 +41,7 @@
 #   chat turn.
 # ==============================================================================
 
+from dataclasses import dataclass
 from typing import Any, Dict, List
 
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -91,6 +92,14 @@ def _is_permanent_auth_error(exc: BaseException) -> bool:
     return any(marker in message for marker in _PERMANENT_AUTH_ERROR_MARKERS)
 
 
+@dataclass
+class RetrievalStages:
+    """The candidate ranking before AND after reranking, for one question."""
+
+    before_reranking: List[RetrievedChunk]
+    after_reranking: List[RetrievedChunk]
+
+
 class RAGPipeline:
     """
     Orchestrates one full question-answering turn: rewrite -> retrieve ->
@@ -116,12 +125,36 @@ class RAGPipeline:
         """
         Retrieve the top-K most relevant chunks for `question`.
 
+        Thin wrapper around retrieve_with_stages() that returns just the
+        final, post-reranking list -- what the rest of the pipeline treats
+        as "the evidence". Use retrieve_with_stages() directly when you also
+        need the pre-reranking ranking (e.g. to measure what reranking
+        actually changed -- see scripts/evaluate_retrieval.py).
+        """
+        return self.retrieve_with_stages(question).after_reranking
+
+    def retrieve_with_stages(self, question: str) -> RetrievalStages:
+        """
+        Same retrieval as retrieve(), but returns BOTH the ranking before
+        reranking and the final ranking after it, instead of discarding the
+        pre-reranking one.
+
+        WHY THIS EXISTS
+          retrieve() used to compute the pre-reranking candidates, rerank
+          them, and only ever return the reranked result -- there was no way
+          to see what reranking actually changed. scripts/evaluate_retrieval.py
+          uses this to report Recall/Precision/NDCG/MRR BEFORE and AFTER
+          reranking side by side, so you can see reranking's real effect on
+          retrieval quality instead of just trusting that it helps.
+
         Runs vector (+ optional hybrid) search via retrieval_service --
         optionally against several LLM-generated paraphrasings of `question`
         (see rag_pipeline/multi_query.py), fused via reciprocal rank fusion
-        when ENABLE_MULTI_QUERY is set -- then optional cross-encoder
-        reranking, returning the final ranked list the rest of the pipeline
-        should treat as "the evidence".
+        when ENABLE_MULTI_QUERY is set. `before_reranking` is that full
+        candidate pool (deliberately NOT cut to top_k when reranking is
+        enabled, since retrieval_service over-fetches for reranking to work
+        with -- truncating first would hide exactly the "reranking promoted
+        a candidate from rank 8 to rank 2" cases this method exists to show).
 
         The score threshold is enforced TWICE: once inside
         retrieval_service.retrieve() on the vector/hybrid score, and again
@@ -131,17 +164,20 @@ class RAGPipeline:
         threshold can still get a near-zero cross-encoder score, and
         without this second check it would still be displayed as a
         "source" despite being effectively irrelevant. This is also why
-        the result here can be shorter than top_k, or empty: a fixed
-        source count that pads out with weak matches is exactly what a
-        real relevance threshold is supposed to prevent.
+        after_reranking can be shorter than top_k, or empty: a fixed source
+        count that pads out with weak matches is exactly what a real
+        relevance threshold is supposed to prevent.
         """
         if settings.enable_multi_query:
             variants = generate_query_variants(question, self._llm, settings.multi_query_variants)
-            chunks = reciprocal_rank_fusion([retrieval_service.retrieve(variant) for variant in variants])
+            before_reranking = reciprocal_rank_fusion(
+                [retrieval_service.retrieve(variant) for variant in variants]
+            )
         else:
-            chunks = retrieval_service.retrieve(question)
-        if not chunks:
-            return []
+            before_reranking = retrieval_service.retrieve(question)
+
+        if not before_reranking:
+            return RetrievalStages(before_reranking=[], after_reranking=[])
 
         if settings.enable_reranking:
             candidate_dicts = [
@@ -154,10 +190,10 @@ class RAGPipeline:
                     "chapter_title": c.chapter_title,
                     "section_title": c.section_title,
                 }
-                for c in chunks
+                for c in before_reranking
             ]
             reranked_dicts = rerank(question, candidate_dicts)
-            chunks = [
+            after_reranking = [
                 RetrievedChunk(
                     chunk_text=d["chunk_text"],
                     score=d.get("rerank_score", d["score"]),
@@ -169,9 +205,11 @@ class RAGPipeline:
                 )
                 for d in reranked_dicts
                 if d.get("rerank_score", d["score"]) >= settings.score_threshold
-            ]
+            ][: settings.top_k]
+        else:
+            after_reranking = before_reranking[: settings.top_k]
 
-        return chunks[: settings.top_k]
+        return RetrievalStages(before_reranking=before_reranking, after_reranking=after_reranking)
 
     def _run_multi_hop(
         self, question: str, chunks: List[RetrievedChunk], context: str

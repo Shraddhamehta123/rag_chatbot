@@ -1,0 +1,90 @@
+# ==============================================================================
+# tests/test_evaluate_retrieval.py
+# ------------------------------------------------------------------------------
+# Tests for scripts/evaluate_retrieval.py's pure helper functions: locating
+# the correct page's rank, computing one stage's metrics, aggregating across
+# queries, and summarizing reranking's before/after impact. The live
+# RAGPipeline.retrieve_with_stages() call itself is covered in
+# tests/test_rag_pipeline.py -- these tests are about the math on top of it.
+# ==============================================================================
+
+import pytest
+
+from rag_pipeline.retrieval_service import RetrievedChunk
+from scripts.eval_questions import EvalQuestion
+from scripts.evaluate_retrieval import (
+    QueryResult,
+    StageMetrics,
+    _aggregate_stage,
+    _find_rank,
+    _reranking_impact_summary,
+    _stage_metrics,
+)
+
+
+def _chunk(doc: str, page: int, score: float = 0.5) -> RetrievedChunk:
+    return RetrievedChunk(chunk_text="text", score=score, document_name=doc, document_type="Test", page_number=page)
+
+
+def test_find_rank_locates_the_correct_page():
+    eval_q = EvalQuestion("Q", "doc.pdf", 3)
+    chunks = [_chunk("doc.pdf", 1), _chunk("doc.pdf", 3), _chunk("doc.pdf", 5)]
+    assert _find_rank(chunks, eval_q) == 2
+
+
+def test_find_rank_returns_none_when_the_page_never_appears():
+    eval_q = EvalQuestion("Q", "doc.pdf", 99)
+    assert _find_rank([_chunk("doc.pdf", 1)], eval_q) is None
+
+
+def test_stage_metrics_are_perfect_when_found_at_rank_one():
+    eval_q = EvalQuestion("Q", "doc.pdf", 1)
+    metrics = _stage_metrics([_chunk("doc.pdf", 1)], eval_q)
+
+    assert metrics.found_rank == 1
+    assert metrics.recall_at_k[1] == 1.0
+    assert metrics.ndcg_at_k[1] == 1.0
+    assert metrics.reciprocal_rank == 1.0
+
+
+def test_stage_metrics_are_zero_when_never_found():
+    eval_q = EvalQuestion("Q", "doc.pdf", 99)
+    metrics = _stage_metrics([_chunk("doc.pdf", 1)], eval_q)
+
+    assert metrics.found_rank is None
+    assert metrics.recall_at_k[5] == 0.0
+    assert metrics.reciprocal_rank == 0.0
+
+
+def _result(before_rank, after_rank) -> QueryResult:
+    empty = {k: 0.0 for k in (1, 3, 5)}
+    return QueryResult(
+        question="q",
+        expected_file="doc.pdf",
+        expected_page=1,
+        before_reranking=StageMetrics(before_rank, empty, empty, empty, 0.0),
+        after_reranking=StageMetrics(after_rank, empty, empty, empty, 0.0),
+        retrieved_after_reranking=[],
+    )
+
+
+def test_reranking_impact_summary_counts_improved_worsened_and_unchanged():
+    results = [
+        _result(before_rank=3, after_rank=1),  # improved: promoted to a better rank
+        _result(before_rank=1, after_rank=4),  # worsened: demoted
+        _result(before_rank=2, after_rank=2),  # unchanged: same rank
+        _result(before_rank=None, after_rank=1),  # improved: found where it wasn't before
+        _result(before_rank=None, after_rank=None),  # unchanged: still not found either way
+    ]
+
+    assert _reranking_impact_summary(results) == {"improved": 2, "worsened": 1, "unchanged": 2}
+
+
+def test_aggregate_stage_averages_metrics_across_queries():
+    perfect = StageMetrics(1, {1: 1.0, 3: 1.0, 5: 1.0}, {1: 1.0, 3: 1 / 3, 5: 0.2}, {1: 1.0, 3: 1.0, 5: 1.0}, 1.0)
+    missed = StageMetrics(None, {1: 0.0, 3: 0.0, 5: 0.0}, {1: 0.0, 3: 0.0, 5: 0.0}, {1: 0.0, 3: 0.0, 5: 0.0}, 0.0)
+
+    aggregate = _aggregate_stage([perfect, missed])
+
+    assert aggregate["recall_at_k"][1] == pytest.approx(0.5)
+    assert aggregate["mrr"] == pytest.approx(0.5)
