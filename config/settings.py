@@ -69,7 +69,7 @@ class Settings:
     # -- Gemini (used when LLM_PROVIDER=gemini and/or EMBEDDING_PROVIDER=gemini)
     # GEMINI_API_KEY is required for either. Get one at https://aistudio.google.com/apikey
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    gemini_chat_model: str = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.6-flash")
+    gemini_chat_model: str = os.getenv("GEMINI_CHAT_MODEL", "gemini-3.8-flash")
     gemini_temperature: float = float(os.getenv("GEMINI_TEMPERATURE", "0.1"))
     # Gemini's free tier caps CHAT generation at a much stricter ~5
     # requests/minute (separate from the embedding quota above). Both the

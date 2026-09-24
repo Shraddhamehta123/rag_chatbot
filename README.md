@@ -43,7 +43,7 @@ entirely on a single machine — no cloud infrastructure required to try it out.
 │    rag_pipeline.py           RAGPipeline: retrieve→context→generate     │
 │        │                                                                 │
 │        ▼                                                                 │
-│  Gemini Chat Model (gemini-3.6-flash)  ──► grounded, cited answer       │
+│  Gemini Chat Model (gemini-3.8-flash)  ──► grounded, cited answer       │
 │        │                                                                 │
 └────────┼──────────────────────────────────────────────────────────────┘
          ▼
