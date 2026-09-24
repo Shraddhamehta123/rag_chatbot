@@ -133,6 +133,48 @@ def render_sources(sources: list, debug_mode: bool) -> None:
                 st.caption(f"Raw score: {source['score']}")
 
 
+def render_assistant_message(index: int, message: dict, debug_mode: bool) -> None:
+    """
+    Render one assistant turn: answer text, sources, confidence, and the
+    👍/👎 feedback buttons -- shared by both the chat-history replay loop and
+    the just-generated answer, so feedback buttons appear immediately after
+    a response is generated instead of only on the NEXT rerun (the history
+    loop is the only place that used to render them, and Streamlit doesn't
+    re-run that loop until some later interaction triggers a rerun).
+
+    `index` must be the message's stable position in st.session_state.messages
+    -- used as the button keys' suffix so they stay unique and consistent
+    across reruns (the identical index the history loop will use for this
+    same message on the next rerun).
+    """
+    st.markdown(message["content"])
+    render_sources(message.get("sources", []), debug_mode)
+    if message.get("confidence") is not None:
+        st.caption(f"Confidence: {message['confidence']:.0%}")
+    if debug_mode and message.get("grounded") is False:
+        st.warning("Grounding check flagged this answer as possibly not fully supported by the retrieved context.")
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("👍", key=f"up_{index}"):
+            log_feedback(
+                message.get("question", ""),
+                message["content"],
+                message.get("sources", []),
+                rating="up",
+            )
+            st.toast("Thanks for the feedback!", icon="👍")
+    with col2:
+        if st.button("👎", key=f"down_{index}"):
+            log_feedback(
+                message.get("question", ""),
+                message["content"],
+                message.get("sources", []),
+                rating="down",
+            )
+            st.toast("Thanks — we'll use this to improve.", icon="👎")
+
+
 def main() -> None:
     debug_mode = render_sidebar()
 
@@ -159,30 +201,10 @@ def main() -> None:
 
     for i, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
-            st.markdown(message["content"])
             if message["role"] == "assistant":
-                render_sources(message.get("sources", []), debug_mode)
-                if message.get("confidence") is not None:
-                    st.caption(f"Confidence: {message['confidence']:.0%}")
-                col1, col2 = st.columns([1, 1])
-                with col1:
-                    if st.button("👍", key=f"up_{i}"):
-                        log_feedback(
-                            message.get("question", ""),
-                            message["content"],
-                            message.get("sources", []),
-                            rating="up",
-                        )
-                        st.toast("Thanks for the feedback!", icon="👍")
-                with col2:
-                    if st.button("👎", key=f"down_{i}"):
-                        log_feedback(
-                            message.get("question", ""),
-                            message["content"],
-                            message.get("sources", []),
-                            rating="down",
-                        )
-                        st.toast("Thanks — we'll use this to improve.", icon="👎")
+                render_assistant_message(i, message, debug_mode)
+            else:
+                st.markdown(message["content"])
 
     question = st.chat_input("Ask about your coverage, deductibles, benefits...")
     if question:
@@ -193,21 +215,23 @@ def main() -> None:
         with st.chat_message("assistant"):
             with st.spinner("Searching your plan documents..."):
                 result = pipeline.answer_question(question)
-            st.markdown(result["answer"])
-            render_sources(result["sources"], debug_mode)
-            st.caption(f"Confidence: {result['confidence']:.0%}")
-            if debug_mode and not result["grounded"]:
-                st.warning("Grounding check flagged this answer as possibly not fully supported by the retrieved context.")
 
-        st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": result["answer"],
-                "sources": result["sources"],
-                "confidence": result["confidence"],
-                "question": question,
-            }
-        )
+            # Append BEFORE rendering, so the message's index in
+            # st.session_state.messages is already final -- the feedback
+            # buttons' keys then match what the history loop above will use
+            # for this exact message on every future rerun.
+            st.session_state.messages.append(
+                {
+                    "role": "assistant",
+                    "content": result["answer"],
+                    "sources": result["sources"],
+                    "confidence": result["confidence"],
+                    "grounded": result["grounded"],
+                    "question": question,
+                }
+            )
+            new_index = len(st.session_state.messages) - 1
+            render_assistant_message(new_index, st.session_state.messages[new_index], debug_mode)
 
 
 if __name__ == "__main__":
