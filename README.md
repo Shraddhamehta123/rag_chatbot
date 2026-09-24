@@ -17,8 +17,10 @@ entirely on a single machine — no cloud infrastructure required to try it out.
 │  ingestion/pdf_loader.py        [PyMuPDF: load + parse, page-by-page]   │
 │        │                                                                 │
 │        ▼                                                                 │
-│  chunking/chunker.py            [RecursiveCharacterTextSplitter          │
-│        │                          1000/200, + file/page/type metadata]  │
+│  chunking/chunker.py            [chapter/section-aware for structured   │
+│        │                          docs (structure_chunker.py), else     │
+│        │                          RecursiveCharacterTextSplitter 1000/200│
+│        │                          + file/page/type/chapter/section meta]│
 │        ▼                                                                 │
 │  embeddings/embedding_service.py [pluggable: local (sentence-transformers)│
 │        │                          or Gemini (gemini-embedding-001)]      │
@@ -247,7 +249,7 @@ The LLM and embedding swap (item 0 below) is already done — see section 6.
 rag_chatbot/
 ├── data/pdfs/                  # source PDFs (backend-managed, no upload UI)
 ├── ingestion/pdf_loader.py
-├── chunking/chunker.py
+├── chunking/                    # chunker.py (dispatch), structure_chunker.py (chapter/section-aware)
 ├── embeddings/                 # base.py, local_embeddings.py, gemini_embeddings.py, embedding_service.py
 ├── vector_store/                # chroma_manager.py, metadata_table.py
 ├── rag_pipeline/                # retrieval_service, reranker, query_rewriter, memory, guardrails, prompt_templates, rag_pipeline

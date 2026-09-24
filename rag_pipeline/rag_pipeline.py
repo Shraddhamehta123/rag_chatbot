@@ -140,6 +140,8 @@ class RAGPipeline:
                     "document_name": c.document_name,
                     "document_type": c.document_type,
                     "page_number": c.page_number,
+                    "chapter_title": c.chapter_title,
+                    "section_title": c.section_title,
                 }
                 for c in chunks
             ]
@@ -151,6 +153,8 @@ class RAGPipeline:
                     document_name=d["document_name"],
                     document_type=d["document_type"],
                     page_number=d["page_number"],
+                    chapter_title=d.get("chapter_title", ""),
+                    section_title=d.get("section_title", ""),
                 )
                 for d in reranked_dicts
                 if d.get("rerank_score", d["score"]) >= settings.score_threshold
@@ -164,18 +168,20 @@ class RAGPipeline:
         sees in its prompt.
 
         Each chunk is labeled with a bracketed source tag
-        ([Source: <document>, page <N>]) directly above its text, so the
-        model has an unambiguous, ready-to-copy citation for every piece of
-        context it might use in its answer.
+        ([Source: <document>, page <N>], with chapter/section appended when
+        the source document has that structure) directly above its text, so
+        the model has an unambiguous, ready-to-copy citation for every piece
+        of context it might use in its answer.
         """
         if not chunks:
             return "(No relevant context was found in the available documents.)"
 
         blocks = []
         for chunk in chunks:
-            blocks.append(
-                f"[Source: {chunk.document_name}, page {chunk.page_number}]\n{chunk.chunk_text}"
-            )
+            citation = f"{chunk.document_name}, page {chunk.page_number}"
+            if chunk.section_title:
+                citation += f" ({chunk.section_title})"
+            blocks.append(f"[Source: {citation}]\n{chunk.chunk_text}")
         return "\n\n---\n\n".join(blocks)
 
     @retry(
@@ -284,6 +290,8 @@ class RAGPipeline:
                         "document_type": c.document_type,
                         "page_number": c.page_number,
                         "score": c.score,
+                        "chapter_title": c.chapter_title,
+                        "section_title": c.section_title,
                     }
                     for c in chunks
                 ]

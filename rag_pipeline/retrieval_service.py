@@ -55,6 +55,10 @@ class RetrievedChunk:
     document_name: str
     document_type: str
     page_number: int
+    # Populated only for chapter/section-structured documents (see
+    # chunking/structure_chunker.py); "" for flatter documents.
+    chapter_title: str = ""
+    section_title: str = ""
 
 
 def _distance_to_similarity(distance: float) -> float:
@@ -81,6 +85,8 @@ def _vector_search(query: str, top_k: int) -> List[RetrievedChunk]:
                 document_name=meta.get("document_name", "unknown"),
                 document_type=meta.get("document_type", "unknown"),
                 page_number=meta.get("page_number", 0),
+                chapter_title=meta.get("chapter_title", ""),
+                section_title=meta.get("section_title", ""),
             )
         )
     return results
@@ -196,6 +202,8 @@ def retrieve_as_dicts(
             "document_name": c.document_name,
             "document_type": c.document_type,
             "page_number": c.page_number,
+            "chapter_title": c.chapter_title,
+            "section_title": c.section_title,
         }
         for c in chunks
     ]

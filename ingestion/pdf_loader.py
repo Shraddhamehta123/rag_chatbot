@@ -65,6 +65,28 @@ _DOCUMENT_TYPE_KEYWORDS = {
 }
 
 
+# Applied to every extracted page's text, in order, so all three source
+# documents (a real-world Aetna PPO Evidence of Coverage plus two synthetic
+# "Sample Health Plan" documents) present a single consistent fictional
+# insurer to the chatbot and its users. Kept here, at the text-extraction
+# layer, rather than edited into the PDF binaries themselves: PDF redaction
+# tools rewrite a page's underlying content stream, which can reorder how
+# PyMuPDF reads the text back out (replacement text can land at the end of
+# the page instead of inline) -- a correctness risk for RAG that a plain
+# string replacement on already-extracted text doesn't have.
+_BRAND_REPLACEMENTS = [
+    ("Aetna", "ABC"),
+    ("Sample Health Insurance Company", "ABC Insurance Company"),
+    ("Sample Health Plan", "ABC Health Plan"),
+]
+
+
+def _apply_brand_replacements(text: str) -> str:
+    for old, new in _BRAND_REPLACEMENTS:
+        text = text.replace(old, new)
+    return text
+
+
 def infer_document_type(file_name: str) -> str:
     """
     Guess a human-readable document type from a PDF's file name.
@@ -120,7 +142,7 @@ def _extract_pages_from_pdf(pdf_path: Path) -> List[PageContent]:
                 )
                 continue
 
-            text = text.strip()
+            text = _apply_brand_replacements(text.strip())
             if not text:
                 # Blank pages (section dividers, scanned images with no OCR
                 # layer) contribute nothing to retrieval -- skip rather than

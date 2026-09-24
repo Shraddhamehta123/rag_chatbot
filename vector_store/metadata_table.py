@@ -73,7 +73,9 @@ CREATE TABLE IF NOT EXISTS chunk_metadata (
     page_number        INTEGER NOT NULL,
     chunk_text         TEXT NOT NULL,
     embedding_vector   TEXT NOT NULL,   -- JSON-encoded list[float]; audit copy only
-    created_timestamp  TEXT NOT NULL
+    created_timestamp  TEXT NOT NULL,
+    chapter_title      TEXT,            -- NULL for non-chaptered documents
+    section_title      TEXT             -- NULL for non-chaptered documents
 );
 """
 
@@ -134,6 +136,8 @@ def insert_chunks(chunks: List[Chunk], embeddings: List[List[float]]) -> None:
             chunk.chunk_text,
             json.dumps(embedding),
             chunk.created_timestamp,
+            chunk.chapter_title,
+            chunk.section_title,
         )
         for chunk, embedding in zip(chunks, embeddings)
     ]
@@ -142,8 +146,9 @@ def insert_chunks(chunks: List[Chunk], embeddings: List[List[float]]) -> None:
             """
             INSERT OR REPLACE INTO chunk_metadata
                 (chunk_id, document_name, document_type, page_number,
-                 chunk_text, embedding_vector, created_timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 chunk_text, embedding_vector, created_timestamp,
+                 chapter_title, section_title)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )

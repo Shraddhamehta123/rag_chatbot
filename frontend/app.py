@@ -124,6 +124,10 @@ def render_sources(sources: list, debug_mode: bool) -> None:
                 f"**{i}. {source['document_name']}** — page {source['page_number']} "
                 f"_({source['document_type']})_"
             )
+            if source.get("section_title"):
+                # Only chapter/section-structured documents (e.g. the
+                # Evidence of Coverage) set this -- see chunking/structure_chunker.py.
+                st.caption(f"{source.get('chapter_title', '')} › {source['section_title']}")
             st.progress(min(max(source["score"], 0.0), 1.0), text=f"Relevance score: {source['score']:.2f}")
             if debug_mode:
                 st.caption(f"Raw score: {source['score']}")

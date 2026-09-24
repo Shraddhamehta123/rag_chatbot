@@ -105,6 +105,10 @@ def upsert_chunks(chunks: List[Chunk], embeddings: List[List[float]]) -> None:
                 "document_type": c.document_type,
                 "page_number": c.page_number,
                 "created_timestamp": c.created_timestamp,
+                # Chroma metadata values can't be None -- "" means "not a
+                # chapter/section-structured document" (see chunking/chunker.py).
+                "chapter_title": c.chapter_title or "",
+                "section_title": c.section_title or "",
             }
             for c in chunks
         ],

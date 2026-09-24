@@ -59,3 +59,36 @@ def test_each_chunk_gets_a_unique_chunk_id():
 
 def test_chunk_documents_on_empty_input_returns_empty_list():
     assert chunk_documents([]) == []
+
+
+def test_flat_documents_get_no_chapter_or_section_metadata():
+    page = _make_page("Deductible info here.", page_number=7, file_name="Summary_of_Benefits.pdf")
+    chunks = chunk_documents([page])
+
+    assert chunks[0].chapter_title is None
+    assert chunks[0].section_title is None
+
+
+def test_chaptered_documents_are_routed_to_hierarchical_chunking():
+    text = (
+        "CHAPTER 1: \nGet started as a member\n\nSECTION 1\nYou're a member\n\nSome real content."
+    )
+    page = _make_page(text, page_number=4, file_name="Evidence_of_Coverage.pdf")
+    chunks = chunk_documents([page])
+
+    # A new heading always starts its own piece (see chunking/structure_chunker.py),
+    # so the bare chapter announcement and its first section land in separate
+    # chunks -- both carrying the correct chapter/section metadata.
+    assert len(chunks) == 2
+    assert chunks[0].chapter_title == "Chapter 1: Get started as a member"
+    assert chunks[0].section_title is None
+
+    section_chunk = chunks[1]
+    assert section_chunk.chapter_title == "Chapter 1: Get started as a member"
+    assert section_chunk.section_title == "Section 1: You're a member"
+    # The chunk text is prefixed with a chapter/section "breadcrumb" so it
+    # stays meaningful even if retrieved on its own, out of context.
+    assert section_chunk.chunk_text.startswith(
+        "Chapter 1: Get started as a member > Section 1: You're a member"
+    )
+    assert "Some real content." in section_chunk.chunk_text
